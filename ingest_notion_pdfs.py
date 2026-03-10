@@ -40,7 +40,11 @@ from PIL import Image
 import pytesseract
 from pdf2image import convert_from_path
 import tiktoken
-import openai
+
+# OpenAI 1.x client
+from openai import OpenAI
+from openai import APIError, RateLimitError
+
 from supabase import create_client, Client
 
 # --- configuration constants ------------------------------------------------
@@ -78,8 +82,10 @@ def extract_text_from_pdf(path: str) -> Tuple[List[str], int]:
 
     for i, page in enumerate(doc, start=1):
         text = page.get_text("text")
-        if len(text.strip()) <= 20:
-            logger.debug("page %d appears empty, running OCR", i)
+        # only OCR when there is no selectable text at all; short pages may still
+        # contain legitimate content and shouldn't be OCR'd.
+        if not text.strip():
+            logger.debug("page %d empty, running OCR", i)
             try:
                 text = ocr_page(page)
                 ocr_pages += 1
@@ -169,9 +175,9 @@ def chunk_text(text: str) -> List[Tuple[str, Optional[str]]]:
     def flush_chunk():
         nonlocal cur_chunk, cur_section, cur_tokens
         if cur_chunk:
-            chunk_text = " ".join(cur_chunk).strip()
-            if chunk_text:
-                chunks.append((chunk_text, cur_section))
+            chunked_text = " ".join(cur_chunk).strip()
+            if chunked_text:
+                chunks.append((chunked_text, cur_section))
         cur_chunk = []
         cur_tokens = 0
 
@@ -199,7 +205,9 @@ def chunk_text(text: str) -> List[Tuple[str, Optional[str]]]:
     return chunks
 
 
-def generate_embeddings(inputs: List[str]) -> List[List[float]]:
+def generate_embeddings(
+    client: OpenAI, inputs: List[str]
+) -> List[List[float]]:
     """Return list of embeddings corresponding to inputs. Handles batching.
 
     Implements simple retry logic for rate limits and transient errors.
@@ -209,15 +217,21 @@ def generate_embeddings(inputs: List[str]) -> List[List[float]]:
         batch = inputs[i : i + BATCH_SIZE]
         while True:
             try:
-                resp = openai.Embedding.create(model=EMBEDDING_MODEL, input=batch)
-                # resp.data is a list of {"embedding": [...], "index": n}
-                results.extend(item["embedding"] for item in resp["data"])
+                resp = client.embeddings.create(model=EMBEDDING_MODEL, input=batch)
+                # resp.data is a list of objects with an `embedding` attribute or key
+                for item in resp.data:
+                    # support either dict or object
+                    emb = item.embedding if hasattr(item, "embedding") else item["embedding"]
+                    results.append(emb)
                 break
-            except openai.error.RateLimitError as err:
+            except RateLimitError as err:
                 logger.warning("rate limit hit, sleeping 5s: %s", err)
                 time.sleep(5)
-            except Exception as err:  # generic retry
+            except APIError as err:  # generic OpenAI API error
                 logger.error("failed to fetch embeddings: %s", err)
+                time.sleep(5)
+            except Exception as err:  # fallback
+                logger.error("unexpected error fetching embeddings: %s", err)
                 time.sleep(5)
     return results
 
@@ -242,14 +256,39 @@ def hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def output_chunks_to_file(rows: List[Dict[str, Any]], output_file: str = "output.txt") -> None:
+    """Write chunks to a text file before inserting into database."""
+    with open(output_file, "a", encoding="utf-8") as f:
+        for i, row in enumerate(rows, 1):
+            f.write(f"\n{'='*80}\n")
+            f.write(f"Chunk #{i}\n")
+            f.write(f"Document: {row.get('document_title', 'N/A')}\n")
+            f.write(f"Type: {row.get('manual_type', 'N/A')}\n")
+            f.write(f"Source URL: {row.get('source_url', 'N/A')}\n")
+            f.write(f"{'='*80}\n")
+            f.write(f"{row.get('content', '')}\n")
+    logger.info("wrote %d chunks to %s", len(rows), output_file)
+
+
 # --- main orchestration -----------------------------------------------------
 
 def main():
+    from dotenv import load_dotenv
+    load_dotenv()
+    
+    # Clear output.txt at start
+    with open("output.txt", "w", encoding="utf-8") as f:
+        f.write("CHUNK OUTPUT LOG\n")
+        f.write(f"Generated at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+    
     # environment checks
-    openai.api_key = os.getenv("OPENAI_API_KEY")
-    if not openai.api_key:
+    key = os.getenv("OPENAI_API_KEY")
+    if not key:
         logger.error("OPENAI_API_KEY not set")
         sys.exit(1)
+    # initialize a single OpenAI client
+    client = OpenAI(api_key=key)
+
     supa_url = os.getenv("SUPABASE_URL")
     supa_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
     if not supa_url or not supa_key:
@@ -291,14 +330,14 @@ def main():
                 chunks = chunk_text(cleaned)
                 logger.info("%s page %d produced %d chunks", fname, page_num, len(chunks))
                 contents = [c for c, _ in chunks]
-                embeddings = generate_embeddings(contents)
-                for (chunk_text, _section), emb in zip(chunks, embeddings):
-                    h = hash_text(chunk_text)
+                embeddings = generate_embeddings(client, contents)
+                for (chunked_text, _section), emb in zip(chunks, embeddings):
+                    h = hash_text(chunked_text)
                     if h in seen_hashes:
                         continue
                     seen_hashes.add(h)
                     row = {
-                        "content": chunk_text,
+                        "content": chunked_text,
                         "embedding": emb,
                         "document_title": fname,
                         "source_url": source_url,
@@ -306,6 +345,7 @@ def main():
                     }
                     rows_to_insert.append(row)
             if rows_to_insert:
+                output_chunks_to_file(rows_to_insert)
                 insert_into_supabase(supabase, rows_to_insert)
                 total_chunks += len(rows_to_insert)
                 logger.info("inserted %d chunks from %s", len(rows_to_insert), fname)
