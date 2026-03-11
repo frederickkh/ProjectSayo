@@ -1,29 +1,35 @@
 #!/usr/bin/env python3
-"""Ingest Notion PDF exports into Supabase for RAG.
+"""Ingest Notion PDF/Markdown exports into Supabase for RAG.
 
 Usage:
-    python ingest_notion_pdfs.py
+    python ingest_notion_pdfs.py              # Full ingestion
+    python ingest_notion_pdfs.py --dry-run    # Preview without saving
+    python ingest_notion_pdfs.py --help       # Show options
 
 Environment Variables (required):
     OPENAI_API_KEY
     SUPABASE_URL
     SUPABASE_SERVICE_ROLE_KEY
 
-The script walks `./notion_exports/` recursively, extracts text from PDFs,
-optionally OCRs pages with little text, cleans and chunks the text, generates
-embeddings using OpenAI, and inserts the chunks into a Supabase table named
-"documents". Duplicate chunks are skipped by hashing.
+Optional:
+    NOTION_EXPORT_DIR     # Default: ./notion_exports
+    ENABLE_OCR            # Default: true
+    EMBEDDING_MODEL       # Default: text-embedding-3-small
 
-The database schema is expected to include at least:
+The script walks through Notion exports, extracts text from PDFs/Markdown,
+cleans and chunks the text (500 tokens, 10% overlap), generates embeddings
+using OpenAI, and inserts chunks into Supabase. Duplicate chunks are skipped.
+
+The database schema is expected to include:
     id UUID PRIMARY KEY DEFAULT gen_random_uuid()
     content TEXT NOT NULL
     embedding VECTOR(1536)
     document_title TEXT
-    source_url TEXT        # extracted from footer, starts with https://cultured-thumb-ad7.notion.site/
+    source_url TEXT
     manual_type TEXT       # teacher or student
     created_at TIMESTAMP DEFAULT NOW()
 
-The code is written for Python 3.10+ and has robust error handling and logging.
+The code is written for Python 3.10+ with robust error handling.
 """
 
 import os
@@ -32,36 +38,80 @@ import re
 import logging
 import hashlib
 import time
+import argparse
 from functools import lru_cache
+from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 
-import fitz  # PyMuPDF
-from PIL import Image
-import pytesseract
-from pdf2image import convert_from_path
-import tiktoken
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    print("ERROR: PyMuPDF not installed. Run: pip install PyMuPDF")
+    sys.exit(1)
 
-# OpenAI 1.x client
-from openai import OpenAI
-from openai import APIError, RateLimitError
+try:
+    from PIL import Image
+except ImportError:
+    print("ERROR: Pillow not installed. Run: pip install Pillow")
+    sys.exit(1)
 
-from supabase import create_client, Client
+try:
+    import pytesseract
+except ImportError:
+    print("ERROR: pytesseract not installed. Run: pip install pytesseract")
+    sys.exit(1)
+
+try:
+    from pdf2image import convert_from_path
+except ImportError:
+    print("ERROR: pdf2image not installed. Run: pip install pdf2image")
+    sys.exit(1)
+
+try:
+    import tiktoken
+except ImportError:
+    print("ERROR: tiktoken not installed. Run: pip install tiktoken")
+    sys.exit(1)
+
+try:
+    from openai import OpenAI, APIError, RateLimitError
+except ImportError:
+    print("ERROR: openai not installed. Run: pip install openai")
+    sys.exit(1)
+
+try:
+    from supabase import create_client, Client
+except ImportError:
+    print("ERROR: supabase not installed. Run: pip install supabase")
+    sys.exit(1)
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    print("ERROR: python-dotenv not installed. Run: pip install python-dotenv")
+    sys.exit(1)
 
 # --- configuration constants ------------------------------------------------
-PDF_ROOT = "./notion_exports"
-CHUNK_SIZE = 600
-CHUNK_OVERLAP = 100
-EMBEDDING_MODEL = "text-embedding-3-small"  # 1536 dims
+PDF_ROOT = os.getenv("NOTION_EXPORT_DIR", "./notion_exports")
+CHUNK_SIZE = 500  # Optimized for RAG context window
+CHUNK_OVERLAP = 50  # 10% of chunk size
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 EMBEDDING_DIM = 1536
-BATCH_SIZE = 100  # for embeddings and db inserts
+BATCH_SIZE = 50  # Conservative batch size for rate limiting
+ENABLE_OCR = os.getenv("ENABLE_OCR", "true").lower() == "true"
 
 # --- logging setup ----------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-logger = logging.getLogger(__name__)
+def setup_logging(verbose: bool = False):
+    """Configure logging with appropriate verbosity."""
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    return logging.getLogger(__name__)
+
+logger = setup_logging()
 
 
 # --- helper functions -------------------------------------------------------
@@ -272,88 +322,229 @@ def output_chunks_to_file(rows: List[Dict[str, Any]], output_file: str = "output
 
 # --- main orchestration -----------------------------------------------------
 
-def main():
-    from dotenv import load_dotenv
+def validate_environment() -> Tuple[str, str, str]:
+    """Validate and return API credentials. Exits if missing."""
     load_dotenv()
     
-    # Clear output.txt at start
-    with open("output.txt", "w", encoding="utf-8") as f:
+    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not openai_key:
+        logger.error("OPENAI_API_KEY not set in environment")
+        sys.exit(1)
+    
+    supa_url = os.getenv("SUPABASE_URL", "").strip()
+    if not supa_url:
+        logger.error("SUPABASE_URL not set in environment")
+        sys.exit(1)
+    
+    supa_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    if not supa_key:
+        logger.error("SUPABASE_SERVICE_ROLE_KEY not set in environment")
+        sys.exit(1)
+    
+    logger.info("✓ All environment variables present")
+    return openai_key, supa_url, supa_key
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Ingest Notion PDFs into Supabase for RAG system"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview chunks without inserting into database"
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Enable debug logging"
+    )
+    parser.add_argument(
+        "--pdf-root",
+        default=PDF_ROOT,
+        help=f"Path to Notion export directory (default: {PDF_ROOT})"
+    )
+    parser.add_argument(
+        "--output-file",
+        default="output.txt",
+        help="Output file for preview (default: output.txt)"
+    )
+    args = parser.parse_args()
+    
+    # Reconfigure logging if verbose
+    global logger
+    if args.verbose:
+        logger = setup_logging(verbose=True)
+    
+    logger.info("=" * 80)
+    logger.info("Notion PDF Ingestion Pipeline - RAG System")
+    logger.info("=" * 80)
+    
+    # Validate environment
+    openai_key, supa_url, supa_key = validate_environment()
+    
+    # Check if export directory exists
+    if not os.path.isdir(args.pdf_root):
+        logger.error(f"NOTION_EXPORT_DIR not found: {args.pdf_root}")
+        logger.info(f"Please ensure your Notion exports are in: {args.pdf_root}")
+        sys.exit(1)
+    
+    logger.info(f"Reading from: {args.pdf_root}")
+    logger.info(f"Dry-run mode: {args.dry_run}")
+    
+    # Initialize clients
+    try:
+        client = OpenAI(api_key=openai_key)
+        logger.info("✓ OpenAI client initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize OpenAI client: {e}")
+        sys.exit(1)
+    
+    if not args.dry_run:
+        try:
+            supabase = create_client(supa_url, supa_key)
+            logger.info("✓ Supabase client initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize Supabase client: {e}")
+            sys.exit(1)
+    else:
+        supabase = None
+    
+    # Clear output file at start
+    with open(args.output_file, "w", encoding="utf-8") as f:
         f.write("CHUNK OUTPUT LOG\n")
         f.write(f"Generated at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Dry-run mode: {args.dry_run}\n")
+        f.write("=" * 80 + "\n\n")
     
-    # environment checks
-    key = os.getenv("OPENAI_API_KEY")
-    if not key:
-        logger.error("OPENAI_API_KEY not set")
-        sys.exit(1)
-    # initialize a single OpenAI client
-    client = OpenAI(api_key=key)
-
-    supa_url = os.getenv("SUPABASE_URL")
-    supa_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    if not supa_url or not supa_key:
-        logger.error("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set")
-        sys.exit(1)
-    supabase = create_client(supa_url, supa_key)
-
+    # Statistics
     total_files = 0
     total_chunks = 0
     total_ocr_pages = 0
+    total_skipped = 0
     seen_hashes: set = set()
-
-    for root, dirs, files in os.walk(PDF_ROOT):
+    errors: List[str] = []
+    
+    # Walk through PDFs
+    for root, dirs, files in os.walk(args.pdf_root):
         for fname in files:
             if not fname.lower().endswith(".pdf"):
                 continue
+            
             total_files += 1
             path = os.path.join(root, fname)
-            manual_type = "teacher" if "teacher" in root.lower() else "student" if "student" in root.lower() else ""
-            logger.info("processing file %s (type=%s)", path, manual_type)
-            pages, ocr_count = extract_text_from_pdf(path)
-            total_ocr_pages += ocr_count
-            if not pages:
-                continue
-            headers = identify_common_headers(pages)
-            # try to pull Notion source URL from any page text
-            url_pattern = re.compile(r"https://cultured-thumb-ad7\.notion\.site/\S+")
-            source_url = ""
-            for page_text in pages:
-                match = url_pattern.search(page_text)
-                if match:
-                    source_url = match.group(0)
-                    break
-            rows_to_insert: List[Dict[str, Any]] = []
-            for page_num, raw_page in enumerate(pages, start=1):
-                cleaned = clean_text(raw_page, headers)
-                if not cleaned:
+            
+            # Detect manual type from directory structure
+            manual_type = ""
+            if "teacher" in root.lower():
+                manual_type = "teacher"
+            elif "student" in root.lower():
+                manual_type = "student"
+            
+            logger.info(f"[{total_files}] Processing: {fname} (type={manual_type or 'unknown'})")
+            
+            try:
+                # Extract text from PDF
+                pages, ocr_count = extract_text_from_pdf(path)
+                total_ocr_pages += ocr_count
+                
+                if not pages:
+                    logger.warning(f"  ⚠ No text extracted from {fname}")
+                    errors.append(f"{fname}: No text extracted")
                     continue
-                chunks = chunk_text(cleaned)
-                logger.info("%s page %d produced %d chunks", fname, page_num, len(chunks))
-                contents = [c for c, _ in chunks]
-                embeddings = generate_embeddings(client, contents)
-                for (chunked_text, _section), emb in zip(chunks, embeddings):
-                    h = hash_text(chunked_text)
-                    if h in seen_hashes:
+                
+                logger.debug(f"  Extracted {len(pages)} pages, OCR used on {ocr_count} pages")
+                
+                # Identify common headers/footers
+                headers = identify_common_headers(pages)
+                
+                # Extract Notion source URL
+                url_pattern = re.compile(r"https://[^\s]+\.notion\.[^\s]+")
+                source_url = ""
+                for page_text in pages:
+                    match = url_pattern.search(page_text)
+                    if match:
+                        source_url = match.group(0)
+                        break
+                
+                # Process pages
+                rows_to_insert: List[Dict[str, Any]] = []
+                
+                for page_num, raw_page in enumerate(pages, start=1):
+                    cleaned = clean_text(raw_page, headers)
+                    if not cleaned:
                         continue
-                    seen_hashes.add(h)
-                    row = {
-                        "content": chunked_text,
-                        "embedding": emb,
-                        "document_title": fname,
-                        "source_url": source_url,
-                        "manual_type": manual_type,
-                    }
-                    rows_to_insert.append(row)
-            if rows_to_insert:
-                output_chunks_to_file(rows_to_insert)
-                insert_into_supabase(supabase, rows_to_insert)
-                total_chunks += len(rows_to_insert)
-                logger.info("inserted %d chunks from %s", len(rows_to_insert), fname)
-
-    logger.info("done: %d files, %d chunks, %d ocr pages", total_files, total_chunks, total_ocr_pages)
-    print(f"Total files processed: {total_files}")
-    print(f"Total chunks inserted: {total_chunks}")
-    print(f"Total OCR pages used: {total_ocr_pages}")
+                    
+                    chunks = chunk_text(cleaned)
+                    logger.debug(f"  Page {page_num}: {len(chunks)} chunks")
+                    
+                    # Generate embeddings
+                    contents = [c for c, _ in chunks]
+                    try:
+                        embeddings = generate_embeddings(client, contents)
+                    except Exception as emb_err:
+                        logger.error(f"  Failed to generate embeddings: {emb_err}")
+                        errors.append(f"{fname} page {page_num}: Embedding failed")
+                        continue
+                    
+                    # Build rows
+                    for (chunked_text, _section), emb in zip(chunks, embeddings):
+                        h = hash_text(chunked_text)
+                        if h in seen_hashes:
+                            total_skipped += 1
+                            continue
+                        
+                        seen_hashes.add(h)
+                        row = {
+                            "content": chunked_text,
+                            "embedding": emb,
+                            "document_title": fname,
+                            "source_url": source_url,
+                            "manual_type": manual_type,
+                        }
+                        rows_to_insert.append(row)
+                
+                if rows_to_insert:
+                    logger.info(f"  ✓ Generated {len(rows_to_insert)} unique chunks")
+                    output_chunks_to_file(rows_to_insert, args.output_file)
+                    
+                    if not args.dry_run and supabase:
+                        try:
+                            insert_into_supabase(supabase, rows_to_insert)
+                            logger.info(f"  ✓ Inserted {len(rows_to_insert)} chunks into Supabase")
+                        except Exception as db_err:
+                            logger.error(f"  ✗ Failed to insert into Supabase: {db_err}")
+                            errors.append(f"{fname}: DB insert failed - {db_err}")
+                            continue
+                    
+                    total_chunks += len(rows_to_insert)
+            
+            except Exception as e:
+                logger.error(f"  ✗ Failed to process {fname}: {e}")
+                errors.append(f"{fname}: {str(e)}")
+                continue
+    
+    # Summary
+    logger.info("=" * 80)
+    logger.info("INGESTION COMPLETE")
+    logger.info("=" * 80)
+    print(f"\n📊 Summary:")
+    print(f"  Files processed:    {total_files}")
+    print(f"  Chunks created:     {total_chunks}")
+    print(f"  Chunks skipped:     {total_skipped} (duplicates)")
+    print(f"  OCR pages used:     {total_ocr_pages}")
+    print(f"  Dry-run mode:       {args.dry_run}")
+    
+    if errors:
+        print(f"\n⚠️  Errors encountered ({len(errors)}):")
+        for error in errors:
+            print(f"   - {error}")
+    
+    if args.dry_run:
+        print(f"\n✓ Preview saved to: {args.output_file}")
+        print("  Run without --dry-run to insert into database")
+    else:
+        print(f"\n✓ Data successfully ingested into Supabase!")
 
 
 if __name__ == "__main__":
