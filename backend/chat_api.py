@@ -31,8 +31,8 @@ load_dotenv()
 
 # Configuration
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
-OPENROUTER_URL = "https://openrouter.io/api/v1/chat/completions"
-OPENROUTER_EMBEDDINGS_URL = "https://openrouter.io/api/v1/embeddings"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_EMBEDDINGS_URL = "https://openrouter.ai/api/v1/embeddings"
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
@@ -164,9 +164,15 @@ def generate_rag_response(
 ) -> str:
     """Generate a response using OpenRouter with RAG context."""
     
+    # Check if API key is configured
+    if not OPENROUTER_API_KEY or OPENROUTER_API_KEY == "your_openrouter_api_key_here":
+        logger.warning("OpenRouter API key not configured, using demo response")
+        return generate_demo_response(user_message, context_documents)
+    
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost:3000",  # Required by OpenRouter
     }
     
     # Build context from retrieved documents
@@ -215,12 +221,19 @@ When answering questions:
             "max_tokens": 1000
         }
         
+        logger.debug(f"Sending request to {OPENROUTER_URL} with model {CHAT_MODEL}")
+        
         resp = requests.post(
             OPENROUTER_URL,
             json=payload,
             headers=headers,
             timeout=60
         )
+        
+        # Log response for debugging
+        if resp.status_code != 200:
+            logger.error(f"OpenRouter returned {resp.status_code}: {resp.text}")
+        
         resp.raise_for_status()
         data = resp.json()
         
@@ -236,6 +249,22 @@ When answering questions:
     except Exception as e:
         logger.error(f"Failed to generate response: {e}")
         return f"Sorry, I encountered an error: {str(e)}"
+
+
+def generate_demo_response(user_message: str, context_documents: List[Dict[str, Any]]) -> str:
+    """Generate a demo response for testing without OpenRouter API key."""
+    
+    if not context_documents:
+        if "hello" in user_message.lower() or "hi" in user_message.lower():
+            return "Hello! I'm your AI teaching assistant. To get personalized responses based on your materials, please ingest some document first using: python ingest_notion_pdfs.py\n\nOnce documents are ingested, I can retrieve relevant content and provide better answers."
+        elif "what" in user_message.lower():
+            return "That's a great question! To give you an accurate answer based on your educational materials, I would need documents to be ingested first. Here's how to do it:\n\n1. Place your PDFs in backend/Notion_Export/\n2. Run: python ingest_notion_pdfs.py\n3. Then I can retrieve relevant information from your materials."
+        else:
+            return f"You asked: '{user_message}'\n\nTo provide a personalized response based on your educational materials, please configure your OpenRouter API key and ingest documents. See README.md for setup instructions."
+    
+    # With context documents
+    doc_summary = ", ".join([doc.get('document_title', 'Unknown') for doc in context_documents[:2]])
+    return f"Based on the retrieved content from {doc_summary}, I can see this relates to your educational materials. To provide a proper answer using OpenRouter's AI models, please configure your OPENROUTER_API_KEY in the .env file.\n\nThe documents have been successfully retrieved and are ready to be used once the API key is configured!"
 
 
 # --- API Endpoints ---
