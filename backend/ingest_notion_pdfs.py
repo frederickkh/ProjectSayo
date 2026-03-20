@@ -7,18 +7,18 @@ Usage:
     python ingest_notion_pdfs.py --help       # Show options
 
 Environment Variables (required):
-    OPENAI_API_KEY
+    OPENROUTER_API_KEY
     SUPABASE_URL
     SUPABASE_SERVICE_ROLE_KEY
 
 Optional:
     NOTION_EXPORT_DIR     # Default: ./notion_exports
     ENABLE_OCR            # Default: true
-    EMBEDDING_MODEL       # Default: text-embedding-3-small
+    EMBEDDING_MODEL       # Default: openai/text-embedding-3-small
 
 The script walks through Notion exports, extracts text from PDFs/Markdown,
 cleans and chunks the text (500 tokens, 10% overlap), generates embeddings
-using OpenAI, and inserts chunks into Supabase. Duplicate chunks are skipped.
+using OpenRouter, and inserts chunks into Supabase. Duplicate chunks are skipped.
 
 The database schema is expected to include:
     id UUID PRIMARY KEY DEFAULT gen_random_uuid()
@@ -74,9 +74,9 @@ except ImportError:
     sys.exit(1)
 
 try:
-    from openai import OpenAI, APIError, RateLimitError
+    import requests
 except ImportError:
-    print("ERROR: openai not installed. Run: pip install openai")
+    print("ERROR: requests not installed. Run: pip install requests")
     sys.exit(1)
 
 try:
@@ -95,10 +95,11 @@ except ImportError:
 PDF_ROOT = os.getenv("NOTION_EXPORT_DIR", "./notion_exports")
 CHUNK_SIZE = 500  # Optimized for RAG context window
 CHUNK_OVERLAP = 50  # 10% of chunk size
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "openai/text-embedding-3-small")
 EMBEDDING_DIM = 1536
 BATCH_SIZE = 50  # Conservative batch size for rate limiting
 ENABLE_OCR = os.getenv("ENABLE_OCR", "true").lower() == "true"
+OPENROUTER_API_URL = "https://openrouter.io/api/v1/embeddings"
 
 # --- logging setup ----------------------------------------------------------
 def setup_logging(verbose: bool = False):
@@ -256,33 +257,56 @@ def chunk_text(text: str) -> List[Tuple[str, Optional[str]]]:
 
 
 def generate_embeddings(
-    client: OpenAI, inputs: List[str]
+    api_key: str, inputs: List[str]
 ) -> List[List[float]]:
-    """Return list of embeddings corresponding to inputs. Handles batching.
+    """Return list of embeddings corresponding to inputs using OpenRouter. Handles batching.
 
     Implements simple retry logic for rate limits and transient errors.
     """
     results: List[List[float]] = []
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
     for i in range(0, len(inputs), BATCH_SIZE):
         batch = inputs[i : i + BATCH_SIZE]
-        while True:
+        retries = 0
+        while retries < 3:
             try:
-                resp = client.embeddings.create(model=EMBEDDING_MODEL, input=batch)
-                # resp.data is a list of objects with an `embedding` attribute or key
-                for item in resp.data:
-                    # support either dict or object
-                    emb = item.embedding if hasattr(item, "embedding") else item["embedding"]
-                    results.append(emb)
+                payload = {
+                    "model": EMBEDDING_MODEL,
+                    "input": batch
+                }
+                resp = requests.post(OPENROUTER_API_URL, json=payload, headers=headers, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
+                
+                if "data" in data:
+                    for item in data["data"]:
+                        results.append(item["embedding"])
+                else:
+                    logger.error(f"unexpected response from OpenRouter: {data}")
+                    time.sleep(5)
+                    retries += 1
+                    continue
                 break
-            except RateLimitError as err:
-                logger.warning("rate limit hit, sleeping 5s: %s", err)
+            except requests.exceptions.HTTPError as err:
+                if err.response.status_code == 429:  # rate limit
+                    logger.warning(f"rate limit hit, sleeping 5s: {err}")
+                    time.sleep(5)
+                    retries += 1
+                else:
+                    logger.error(f"failed to fetch embeddings: {err}")
+                    retries = 3
+            except Exception as err:
+                logger.error(f"unexpected error fetching embeddings: {err}")
                 time.sleep(5)
-            except APIError as err:  # generic OpenAI API error
-                logger.error("failed to fetch embeddings: %s", err)
-                time.sleep(5)
-            except Exception as err:  # fallback
-                logger.error("unexpected error fetching embeddings: %s", err)
-                time.sleep(5)
+                retries += 1
+        
+        if retries >= 3:
+            logger.error(f"failed to get embeddings after 3 retries for batch {i}")
+    
     return results
 
 
@@ -326,9 +350,9 @@ def validate_environment() -> Tuple[str, str, str]:
     """Validate and return API credentials. Exits if missing."""
     load_dotenv()
     
-    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not openai_key:
-        logger.error("OPENAI_API_KEY not set in environment")
+    openrouter_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not openrouter_key:
+        logger.error("OPENROUTER_API_KEY not set in environment")
         sys.exit(1)
     
     supa_url = os.getenv("SUPABASE_URL", "").strip()
@@ -342,7 +366,7 @@ def validate_environment() -> Tuple[str, str, str]:
         sys.exit(1)
     
     logger.info("✓ All environment variables present")
-    return openai_key, supa_url, supa_key
+    return openrouter_key, supa_url, supa_key
 
 
 def main():
@@ -381,7 +405,7 @@ def main():
     logger.info("=" * 80)
     
     # Validate environment
-    openai_key, supa_url, supa_key = validate_environment()
+    openrouter_key, supa_url, supa_key = validate_environment()
     
     # Check if export directory exists
     if not os.path.isdir(args.pdf_root):
@@ -390,16 +414,10 @@ def main():
         sys.exit(1)
     
     logger.info(f"Reading from: {args.pdf_root}")
+    logger.info(f"Using embedding model: {EMBEDDING_MODEL}")
     logger.info(f"Dry-run mode: {args.dry_run}")
     
-    # Initialize clients
-    try:
-        client = OpenAI(api_key=openai_key)
-        logger.info("✓ OpenAI client initialized")
-    except Exception as e:
-        logger.error(f"Failed to initialize OpenAI client: {e}")
-        sys.exit(1)
-    
+    # Initialize Supabase client
     if not args.dry_run:
         try:
             supabase = create_client(supa_url, supa_key)
@@ -481,7 +499,7 @@ def main():
                     # Generate embeddings
                     contents = [c for c, _ in chunks]
                     try:
-                        embeddings = generate_embeddings(client, contents)
+                        embeddings = generate_embeddings(openrouter_key, contents)
                     except Exception as emb_err:
                         logger.error(f"  Failed to generate embeddings: {emb_err}")
                         errors.append(f"{fname} page {page_num}: Embedding failed")

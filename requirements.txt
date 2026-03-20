@@ -1,7 +1,0 @@
-openai
-supabase
-PyMuPDF
-pytesseract
-Pillow
-pdf2image
-tiktoken

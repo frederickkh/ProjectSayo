@@ -1,22 +1,72 @@
 "use server";
 
-import OpenAI from "openai";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-});
-
-export async function sendMessage(message: string) {
-    const response = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-            {
-                role: "system", content: "You are a helpful assistant."},
-            {
-                role: "user", content: message
-            },
-            ],
-        });
-    return response.choices[0]?.message?.content ?? "Sorry, I couldn't generate a response.";
+export interface ChatResponse {
+    response: string;
+    sources: Array<{
+        title: string;
+        type: string;
+        similarity: number;
+    }>;
 }
-console.log("KEY:", process.env.OPENAI_API_KEY);
+
+export async function sendMessage(message: string, manualType?: string): Promise<string> {
+    try {
+        const response = await fetch(`${API_BASE_URL}/chat`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                message: message,
+                manual_type: manualType || null
+            }),
+        });
+
+        if (!response.ok) {
+            console.error("Chat API error:", response.status, response.statusText);
+            return "Sorry, I couldn't generate a response. Please try again.";
+        }
+
+        const data: ChatResponse = await response.json();
+        return data.response;
+    } catch (error) {
+        console.error("Chat error:", error);
+        return "Sorry, I encountered an error. Please check that the backend server is running.";
+    }
+}
+
+export async function sendMessageWithSources(
+    message: string,
+    manualType?: string
+): Promise<ChatResponse> {
+    try {
+        const response = await fetch(`${API_BASE_URL}/chat`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                message: message,
+                manual_type: manualType || null
+            }),
+        });
+
+        if (!response.ok) {
+            console.error("Chat API error:", response.status, response.statusText);
+            return {
+                response: "Sorry, I couldn't generate a response. Please try again.",
+                sources: []
+            };
+        }
+
+        return await response.json();
+    } catch (error) {
+        console.error("Chat error:", error);
+        return {
+            response: "Sorry, I encountered an error. Please check that the backend server is running.",
+            sources: []
+        };
+    }
+}
