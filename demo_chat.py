@@ -171,8 +171,8 @@ Features being tested:
     print("    The API will still work, but sources will be empty.\n")
     
     test_chat("Hello! How are you?")
-    test_chat("How to create a new classroom?", manual_type="teacher")
-    test_chat("How track my progress?", manual_type="student")
+    test_chat("I am a teacher. How to create a new classroom?", manual_type="teacher")
+    test_chat("I am a student. How to track my progress?", manual_type="student")
     
     # Ask user to ingest documents
     print_header("About Documents")
