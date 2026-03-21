@@ -1,4 +1,4 @@
-# Part 1: Project Description Document
+# Project Description Document
 Project Title: GenAI Knowledge & Assessment Ecosystem
 Department: Product R&D
 Team Size: 2-3 Students 
