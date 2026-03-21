@@ -24,7 +24,6 @@ AI Model: OpenAI (GPT-4o) or Gemini Pro.
 Knowledge Base Source: Notion (Exported Markdown/PDFs).
 
 ## 2. Group Allocations & Responsibilities
-The 6 students are divided into 3 specialized sub-teams.
 Group 1: The Core RAG Pipeline (Support Chatbot)
 This group builds the primary "BD Support" solution.
 Focus: Building the Data Ingestion Pipeline and the Customer-Facing Chatbot.
