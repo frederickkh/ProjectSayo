@@ -4,10 +4,13 @@ Department: Product R&D
 Team Size: 2-3 Students 
 
 ## 0. Executive Summary: The "AI Support Deflector"
-The Problem:
+**The Problem:**
+
 Our Business Development (BD) team is currently overwhelmed. As our platform grows, teachers and students constantly reach out with functional questions (e.g., "How do I upload a video?" or "Where is the grading button?").
 These answers exist in our Notion User Manuals, but users don't read them. Instead, they message our staff, causing a massive support bottleneck.
-The Solution:
+
+**The Solution:**
+
 We are building a RAG (Retrieval-Augmented Generation) Chatbot.
 Instead of a human answering these tickets, an AI will:
 Read our internal Notion User Manuals.
@@ -18,20 +21,21 @@ Goal: Reduce Tier-1 Support tickets by 60%.
 
 ## 1. Technical Architecture
 The project is a Next.js Web Application supported by a Python Data Pipeline.
-Frontend: Next.js 14+ (App Router).
-Database: Supabase (PostgreSQL + pgvector).
-AI Model: OpenAI (GPT-4o) or Gemini Pro.
-Knowledge Base Source: Notion (Exported Markdown/PDFs).
+- Frontend: Next.js 14+ (App Router).
+- Database: Supabase (PostgreSQL + pgvector).
+- AI Model: OpenAI (GPT-4o) or Gemini Pro.
+- Knowledge Base Source: Notion (Exported Markdown/PDFs).
 
 ## 2. Group Allocations & Responsibilities
 Group 1: The Core RAG Pipeline (Support Chatbot)
+
 This group builds the primary "BD Support" solution.
-Focus: Building the Data Ingestion Pipeline and the Customer-Facing Chatbot.
-Key Responsibilities:
-Ingestion Engine (Python): Build a script to pull data from Notion (User Manuals), chunk the text, and generate embeddings.
-Vector Database: Manage Supabase pgvector to store the knowledge base.
-Chat Application (Next.js): Develop the web-based chat interface where teachers/students ask questions.
-Accuracy: Implement "Citation Logic"—the bot must say "According to the 'Grading Guide'..." and provide a link to the source.
+- Focus: Building the Data Ingestion Pipeline and the Customer-Facing Chatbot.
+- Key Responsibilities:
+    - Ingestion Engine (Python): Build a script to pull data from Notion (User Manuals), chunk the text, and generate embeddings.
+    - Vector Database: Manage Supabase pgvector to store the knowledge base.
+    - Chat Application (Next.js): Develop the web-based chat interface where teachers/students ask questions.
+    - Accuracy: Implement "Citation Logic"—the bot must say "According to the 'Grading Guide'..." and provide a link to the source.
 
 
 
@@ -47,8 +51,8 @@ Accuracy: Implement "Citation Logic"—the bot must say "According to the 'Gradi
 
 
 ## 4. Grading Rubric (Group 1 Specific)
-Retrieval Accuracy (35%): Does the bot answer correctly based only on the Notion documents? (No hallucinations).
-Pipeline Automation (25%): How easy is it to update the knowledge base when we change the User Manual?
-Next.js Implementation (20%): Code quality, UI responsiveness, and Server Actions usage.
-User Experience (20%): Is the chat interface intuitive for non-technical teachers?
+- Retrieval Accuracy (35%): Does the bot answer correctly based only on the Notion documents? (No hallucinations).
+- Pipeline Automation (25%): How easy is it to update the knowledge base when we change the User Manual?
+- Next.js Implementation (20%): Code quality, UI responsiveness, and Server Actions usage.
+- User Experience (20%): Is the chat interface intuitive for non-technical teachers?
 
