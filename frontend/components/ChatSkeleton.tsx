@@ -12,10 +12,10 @@ type Message = {
 };
 
 const WELCOME_PROMPTS = [
-  "Explain quadratic equations to me",
-  "Help me with my essay",
-  "What's the best way to study for exams?",
-  "Can you help me code in Python?",
+  "How do I access my student dashboard?",
+  "How do I create a class in Sayo Academy?",
+  "How do I use the AI grading feature?",
+  "How do I invite students to my class?",
 ];
 
 export default function ChatSkeleton() {
@@ -72,10 +72,10 @@ export default function ChatSkeleton() {
           <div className="h-full flex flex-col items-center justify-center space-y-6">
             <div className="text-center space-y-2 mb-4">
               <h3 className="text-2xl font-bold text-slate-900 dark:text-white">
-                How can I help you today?
+                How can I assist you?
               </h3>
               <p className="text-slate-600 dark:text-slate-400">
-                Ask me anything about your studies
+                Get help accessing and managing Sayo Academy
               </p>
             </div>
 
