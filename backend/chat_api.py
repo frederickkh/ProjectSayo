@@ -147,11 +147,15 @@ def retrieve_relevant_documents(
             }
         ).execute()
         
-        if response.get("error"):
-            logger.error(f"Vector search error: {response['error']}")
-            return []
+        if hasattr(response, "data"):
+            return response.data
+        elif isinstance(response, dict):
+            if response.get("error"):
+                logger.error(f"Vector search error: {response['error']}")
+                return []
+            return response.get("data", [])
         
-        return response.get("data", [])
+        return []
     except Exception as e:
         logger.warning(f"Vector search failed, returning empty: {e}")
         # Fallback: return nothing if search fails
