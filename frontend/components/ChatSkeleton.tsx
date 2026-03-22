@@ -93,7 +93,7 @@ export default function ChatSkeleton() {
             </div>
 
             <div className="text-xs text-slate-500 dark:text-slate-400 pt-4">
-              Powered by advanced AI • Fast and accurate responses
+              Powered by sayo.ai • Fast and accurate responses
             </div>
           </div>
         ) : (
@@ -174,7 +174,7 @@ export default function ChatSkeleton() {
             ) : (
               <>
                 Send
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-4 h-4 rotate-45 -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
                 </svg>
               </>
