@@ -99,7 +99,7 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "openai/text-embedding-3-small")
 EMBEDDING_DIM = 1536
 BATCH_SIZE = 50  # Conservative batch size for rate limiting
 ENABLE_OCR = os.getenv("ENABLE_OCR", "true").lower() == "true"
-OPENROUTER_API_URL = "https://openrouter.io/api/v1/embeddings"
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/embeddings"
 
 # --- logging setup ----------------------------------------------------------
 def setup_logging(verbose: bool = False):
@@ -216,7 +216,10 @@ def chunk_text(text: str) -> List[Tuple[str, Optional[str]]]:
 
     We try to avoid splitting in middle of sentences.
     """
-    encoder = tiktoken.encoding_for_model(EMBEDDING_MODEL)
+    try:
+        encoder = tiktoken.encoding_for_model(EMBEDDING_MODEL.replace("openai/", ""))
+    except KeyError:
+        encoder = tiktoken.get_encoding("cl100k_base")
     sentences = re.split(r"(?<=[.?!])\s+", text)
     chunks: List[Tuple[str, Optional[str]]] = []
     cur_tokens = 0
@@ -319,11 +322,12 @@ def insert_into_supabase(
     """
     for i in range(0, len(rows), BATCH_SIZE):
         batch = rows[i : i + BATCH_SIZE]
-        resp = supabase.table("documents").insert(batch).execute()
-        if resp.get("error"):
-            logger.error("supabase insert error: %s", resp["error"])
-        else:
+        try:
+            resp = supabase.table("documents").insert(batch).execute()
             logger.debug("inserted %d records", len(batch))
+        except Exception as e:
+            logger.error("supabase insert error: %s", str(e))
+            raise e
 
 
 def hash_text(text: str) -> str:
@@ -393,6 +397,12 @@ def main():
         default="output.txt",
         help="Output file for preview (default: output.txt)"
     )
+    parser.add_argument(
+        "--max-files",
+        type=int,
+        default=None,
+        help="Maximum number of PDF files to process"
+    )
     args = parser.parse_args()
     
     # Reconfigure logging if verbose
@@ -444,11 +454,18 @@ def main():
     errors: List[str] = []
     
     # Walk through PDFs
+    stop_processing = False
     for root, dirs, files in os.walk(args.pdf_root):
+        if stop_processing:
+            break
         for fname in files:
             if not fname.lower().endswith(".pdf"):
                 continue
             
+            if args.max_files is not None and total_files >= args.max_files:
+                stop_processing = True
+                break
+                
             total_files += 1
             path = os.path.join(root, fname)
             

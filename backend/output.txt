@@ -1,0 +1,74 @@
+CHUNK OUTPUT LOG
+Generated at: 2026-03-21 17:54:29
+Dry-run mode: False
+================================================================================
+
+
+================================================================================
+Chunk #1
+Document: Γ£Å∩╕Å Completing Assignments (Assigned by teacher).pdf
+Type: student
+Source URL: https://cultured-thumb-ad7.notion.site/Completing-Assignments-Assigned-by-teacher-2c3f541c39d78079948ec64793e4f959
+================================================================================
+Completing Assignments (Assigned
+by teacher)
+1. Go to Your Classroom
+
+================================================================================
+Chunk #2
+Document: Γ£Å∩╕Å Completing Assignments (Assigned by teacher).pdf
+Type: student
+Source URL: https://cultured-thumb-ad7.notion.site/Completing-Assignments-Assigned-by-teacher-2c3f541c39d78079948ec64793e4f959
+================================================================================
+2. View Your Assignments
+You’ll see all assignments given by your teacher — along with the paper type, due date,
+and status. 3. Start Your Practice
+Click Start Practice to begin your assignment. Each reading practice has a time limit — make sure you have enough time before you
+start!
+
+================================================================================
+Chunk #3
+Document: Γ£Å∩╕Å Completing Assignments (Assigned by teacher).pdf
+Type: student
+Source URL: https://cultured-thumb-ad7.notion.site/Completing-Assignments-Assigned-by-teacher-2c3f541c39d78079948ec64793e4f959
+================================================================================
+After You Finish:
+Once you’ve completed the assignment, you’ll be able to see your score and review your
+attempt to understand your performance.
+
+================================================================================
+Chunk #1
+Document: ≡ƒô¥ Self Practice on the Platform - Explore papers and practice on your own!.pdf
+Type: student
+Source URL: https://cultured-thumb-ad7.notion.site/Self-Practice-on-the-Platform-Explore-papers-and-practice-on-your-own-2c3f541c39d780778544c01c41c8ccce
+================================================================================
+Self Practice on the Platform -
+Explore papers and practice on your
+own! Browsing Reading Papers & Doing Exercises
+1. Go to “Reading Paper”
+
+================================================================================
+Chunk #2
+Document: ≡ƒô¥ Self Practice on the Platform - Explore papers and practice on your own!.pdf
+Type: student
+Source URL: https://cultured-thumb-ad7.notion.site/Self-Practice-on-the-Platform-Explore-papers-and-practice-on-your-own-2c3f541c39d780778544c01c41c8ccce
+================================================================================
+Select either DSE (DSE-like papers) or Theme (Theme-based papers). Browse and choose the paper you’d like to work on. Tip: You can filter papers by grade and/or difficulty level to find the most suitable
+ones.
+
+================================================================================
+Chunk #3
+Document: ≡ƒô¥ Self Practice on the Platform - Explore papers and practice on your own!.pdf
+Type: student
+Source URL: https://cultured-thumb-ad7.notion.site/Self-Practice-on-the-Platform-Explore-papers-and-practice-on-your-own-2c3f541c39d780778544c01c41c8ccce
+================================================================================
+Practising Listening Papers
+1. Go to “Listening Paper”
+
+================================================================================
+Chunk #4
+Document: ≡ƒô¥ Self Practice on the Platform - Explore papers and practice on your own!.pdf
+Type: student
+Source URL: https://cultured-thumb-ad7.notion.site/Self-Practice-on-the-Platform-Explore-papers-and-practice-on-your-own-2c3f541c39d780778544c01c41c8ccce
+================================================================================
+Select either DSE or TSA. Choose the paper you’d like to listen to and answer questions for. Tip: You can filter papers by grade and/or difficulty level here too.
