@@ -11,7 +11,10 @@ CREATE TABLE IF NOT EXISTS documents (
     embedding vector(1536),
     document_title TEXT,
     source_url TEXT,
-    manual_type TEXT,  -- 'teacher' or 'student'
+    manual_type TEXT,       -- 'teacher' or 'student'
+    chunk_index INTEGER,    -- 0-based position of this chunk within the document
+    page_number INTEGER,    -- PDF page number this chunk originated from
+    chunk_total INTEGER,    -- Total number of chunks in this document
     created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -21,12 +24,15 @@ CREATE INDEX IF NOT EXISTS documents_embedding_idx ON documents USING ivfflat (e
 
 CREATE INDEX IF NOT EXISTS documents_manual_type_idx ON documents(manual_type);
 CREATE INDEX IF NOT EXISTS documents_created_at_idx ON documents(created_at);
+-- Index for fast neighbour-chunk lookups (used by context expansion)
+CREATE INDEX IF NOT EXISTS documents_title_chunk_idx ON documents(document_title, chunk_index);
 
 -- Create RPC function for vector similarity search
+-- Returns chunk metadata (index, page, total) needed for context expansion
 CREATE OR REPLACE FUNCTION search_documents(
     query_embedding vector(1536),
-    similarity_threshold float DEFAULT 0.5,
-    match_count INT DEFAULT 3,
+    similarity_threshold float DEFAULT 0.1,
+    match_count INT DEFAULT 8,
     manual_type_filter TEXT DEFAULT NULL
 )
 RETURNS TABLE (
@@ -35,6 +41,9 @@ RETURNS TABLE (
     document_title TEXT,
     source_url TEXT,
     manual_type TEXT,
+    chunk_index INTEGER,
+    page_number INTEGER,
+    chunk_total INTEGER,
     similarity FLOAT
 ) AS $$
 BEGIN
@@ -45,6 +54,9 @@ BEGIN
         documents.document_title,
         documents.source_url,
         documents.manual_type,
+        documents.chunk_index,
+        documents.page_number,
+        documents.chunk_total,
         (1 - (documents.embedding <=> query_embedding)) as similarity
     FROM documents
     WHERE
@@ -122,3 +134,19 @@ BEGIN
     RETURN interaction_id;
 END;
 $$ LANGUAGE plpgsql;
+
+
+-- ============================================================
+-- MIGRATION: Run this block if the database already exists
+-- ============================================================
+-- Add chunk tracking columns (safe to run multiple times)
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_index INTEGER;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS page_number INTEGER;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_total INTEGER;
+
+-- Add index for context expansion neighbour lookups
+CREATE INDEX IF NOT EXISTS documents_title_chunk_idx ON documents(document_title, chunk_index);
+
+-- After running the above, also re-run the CREATE OR REPLACE FUNCTION
+-- search_documents(...) block above to update the RPC return signature.
+-- ============================================================

@@ -1,12 +1,12 @@
 CHUNK OUTPUT LOG
-Generated at: 2026-03-21 17:54:29
+Generated at: 2026-03-23 19:01:35
 Dry-run mode: False
 ================================================================================
 
 
 ================================================================================
 Chunk #1
-Document: Γ£Å∩╕Å Completing Assignments (Assigned by teacher).pdf
+Document: Completing Assignments (Assigned by teacher).pdf
 Type: student
 Source URL: https://cultured-thumb-ad7.notion.site/Completing-Assignments-Assigned-by-teacher-2c3f541c39d78079948ec64793e4f959
 ================================================================================
@@ -16,7 +16,7 @@ by teacher)
 
 ================================================================================
 Chunk #2
-Document: Γ£Å∩╕Å Completing Assignments (Assigned by teacher).pdf
+Document: Completing Assignments (Assigned by teacher).pdf
 Type: student
 Source URL: https://cultured-thumb-ad7.notion.site/Completing-Assignments-Assigned-by-teacher-2c3f541c39d78079948ec64793e4f959
 ================================================================================
@@ -28,7 +28,7 @@ start!
 
 ================================================================================
 Chunk #3
-Document: Γ£Å∩╕Å Completing Assignments (Assigned by teacher).pdf
+Document: Completing Assignments (Assigned by teacher).pdf
 Type: student
 Source URL: https://cultured-thumb-ad7.notion.site/Completing-Assignments-Assigned-by-teacher-2c3f541c39d78079948ec64793e4f959
 ================================================================================
@@ -38,7 +38,52 @@ attempt to understand your performance.
 
 ================================================================================
 Chunk #1
-Document: ≡ƒô¥ Self Practice on the Platform - Explore papers and practice on your own!.pdf
+Document: Joining a New Classroom.pdf
+Type: student
+Source URL: https://cultured-thumb-ad7.notion.site/Joining-a-New-Classroom-2c3f541c39d7801c86b4e543465d0962
+================================================================================
+1. Go to “Classroom”
+
+================================================================================
+Chunk #2
+Document: Joining a New Classroom.pdf
+Type: student
+Source URL: https://cultured-thumb-ad7.notion.site/Joining-a-New-Classroom-2c3f541c39d7801c86b4e543465d0962
+================================================================================
+2. Click “Join Classroom”
+
+================================================================================
+Chunk #3
+Document: Joining a New Classroom.pdf
+Type: student
+Source URL: https://cultured-thumb-ad7.notion.site/Joining-a-New-Classroom-2c3f541c39d7801c86b4e543465d0962
+================================================================================
+3. Enter the Join Code
+Type in the 6-digit join code provided by
+your teacher, then click Join Classroom. 4. You’re In! You’ve successfully joined your class.
+
+================================================================================
+Chunk #4
+Document: Joining a New Classroom.pdf
+Type: student
+Source URL: https://cultured-thumb-ad7.notion.site/Joining-a-New-Classroom-2c3f541c39d7801c86b4e543465d0962
+================================================================================
+1. Click “View Classroom”
+Open your classroom to see all the
+assignments assigned by your teacher.
+
+================================================================================
+Chunk #5
+Document: Joining a New Classroom.pdf
+Type: student
+Source URL: https://cultured-thumb-ad7.notion.site/Joining-a-New-Classroom-2c3f541c39d7801c86b4e543465d0962
+================================================================================
+1. Check Your Assignments
+You’ll be able to view all the assignments assigned by your teacher and each task’s details.
+
+================================================================================
+Chunk #1
+Document: Self Practice on the Platform - Explore papers and practice on your own!.pdf
 Type: student
 Source URL: https://cultured-thumb-ad7.notion.site/Self-Practice-on-the-Platform-Explore-papers-and-practice-on-your-own-2c3f541c39d780778544c01c41c8ccce
 ================================================================================
@@ -49,7 +94,7 @@ own! Browsing Reading Papers & Doing Exercises
 
 ================================================================================
 Chunk #2
-Document: ≡ƒô¥ Self Practice on the Platform - Explore papers and practice on your own!.pdf
+Document: Self Practice on the Platform - Explore papers and practice on your own!.pdf
 Type: student
 Source URL: https://cultured-thumb-ad7.notion.site/Self-Practice-on-the-Platform-Explore-papers-and-practice-on-your-own-2c3f541c39d780778544c01c41c8ccce
 ================================================================================
@@ -58,7 +103,7 @@ ones.
 
 ================================================================================
 Chunk #3
-Document: ≡ƒô¥ Self Practice on the Platform - Explore papers and practice on your own!.pdf
+Document: Self Practice on the Platform - Explore papers and practice on your own!.pdf
 Type: student
 Source URL: https://cultured-thumb-ad7.notion.site/Self-Practice-on-the-Platform-Explore-papers-and-practice-on-your-own-2c3f541c39d780778544c01c41c8ccce
 ================================================================================
@@ -67,7 +112,7 @@ Practising Listening Papers
 
 ================================================================================
 Chunk #4
-Document: ≡ƒô¥ Self Practice on the Platform - Explore papers and practice on your own!.pdf
+Document: Self Practice on the Platform - Explore papers and practice on your own!.pdf
 Type: student
 Source URL: https://cultured-thumb-ad7.notion.site/Self-Practice-on-the-Platform-Explore-papers-and-practice-on-your-own-2c3f541c39d780778544c01c41c8ccce
 ================================================================================

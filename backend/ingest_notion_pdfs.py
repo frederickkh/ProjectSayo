@@ -27,6 +27,9 @@ The database schema is expected to include:
     document_title TEXT
     source_url TEXT
     manual_type TEXT       # teacher or student
+    chunk_index INTEGER    # 0-based position within the document
+    page_number INTEGER    # PDF page the chunk originated from
+    chunk_total INTEGER    # total chunks in the document
     created_at TIMESTAMP DEFAULT NOW()
 
 The code is written for Python 3.10+ with robust error handling.
@@ -482,17 +485,17 @@ def main():
                 # Extract text from PDF
                 pages, ocr_count = extract_text_from_pdf(path)
                 total_ocr_pages += ocr_count
-                
+
                 if not pages:
                     logger.warning(f"  ⚠ No text extracted from {fname}")
                     errors.append(f"{fname}: No text extracted")
                     continue
-                
+
                 logger.debug(f"  Extracted {len(pages)} pages, OCR used on {ocr_count} pages")
-                
+
                 # Identify common headers/footers
                 headers = identify_common_headers(pages)
-                
+
                 # Extract Notion source URL
                 url_pattern = re.compile(r"https://[^\s]+\.notion\.[^\s]+")
                 source_url = ""
@@ -501,43 +504,57 @@ def main():
                     if match:
                         source_url = match.group(0)
                         break
-                
-                # Process pages
-                rows_to_insert: List[Dict[str, Any]] = []
-                
+
+                # ── Collect ALL chunks across all pages first ─────────────────
+                # We need the total so we can assign chunk_total to every row.
+                all_chunks: List[Tuple[str, Optional[str], int]] = []  # (text, section, page_num)
+
                 for page_num, raw_page in enumerate(pages, start=1):
                     cleaned = clean_text(raw_page, headers)
                     if not cleaned:
                         continue
-                    
-                    chunks = chunk_text(cleaned)
-                    logger.debug(f"  Page {page_num}: {len(chunks)} chunks")
-                    
-                    # Generate embeddings
-                    contents = [c for c, _ in chunks]
-                    try:
-                        embeddings = generate_embeddings(openrouter_key, contents)
-                    except Exception as emb_err:
-                        logger.error(f"  Failed to generate embeddings: {emb_err}")
-                        errors.append(f"{fname} page {page_num}: Embedding failed")
+                    for chunk_str, section in chunk_text(cleaned):
+                        all_chunks.append((chunk_str, section, page_num))
+
+                if not all_chunks:
+                    logger.warning(f"  ⚠ No chunks produced from {fname}")
+                    continue
+
+                chunk_total = len(all_chunks)
+                logger.debug(f"  Total chunks across all pages: {chunk_total}")
+
+                # ── Generate embeddings in one batched call ───────────────────
+                contents = [c for c, _, _ in all_chunks]
+                try:
+                    embeddings = generate_embeddings(openrouter_key, contents)
+                except Exception as emb_err:
+                    logger.error(f"  Failed to generate embeddings: {emb_err}")
+                    errors.append(f"{fname}: Embedding failed")
+                    continue
+
+                # ── Build rows with chunk_index / page_number / chunk_total ───
+                rows_to_insert: List[Dict[str, Any]] = []
+
+                for chunk_index, ((chunked_str, _section, pg_num), emb) in enumerate(
+                    zip(all_chunks, embeddings)
+                ):
+                    h = hash_text(chunked_str)
+                    if h in seen_hashes:
+                        total_skipped += 1
                         continue
-                    
-                    # Build rows
-                    for (chunked_text, _section), emb in zip(chunks, embeddings):
-                        h = hash_text(chunked_text)
-                        if h in seen_hashes:
-                            total_skipped += 1
-                            continue
-                        
-                        seen_hashes.add(h)
-                        row = {
-                            "content": chunked_text,
-                            "embedding": emb,
-                            "document_title": fname,
-                            "source_url": source_url,
-                            "manual_type": manual_type,
-                        }
-                        rows_to_insert.append(row)
+
+                    seen_hashes.add(h)
+                    row = {
+                        "content": chunked_str,
+                        "embedding": emb,
+                        "document_title": fname,
+                        "source_url": source_url,
+                        "manual_type": manual_type,
+                        "chunk_index": chunk_index,
+                        "page_number": pg_num,
+                        "chunk_total": chunk_total,
+                    }
+                    rows_to_insert.append(row)
                 
                 if rows_to_insert:
                     logger.info(f"  ✓ Generated {len(rows_to_insert)} unique chunks")

@@ -39,7 +39,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 
 CHAT_MODEL = os.getenv("CHAT_MODEL", "openrouter/auto")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "openai/text-embedding-3-small")
-RAG_CONTEXT_LIMIT = int(os.getenv("RAG_CONTEXT_LIMIT", "3"))
+RAG_CONTEXT_LIMIT = int(os.getenv("RAG_CONTEXT_LIMIT", "8"))  # Increased for better coverage
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -116,13 +116,57 @@ def get_embedding(text: str) -> Optional[List[float]]:
         return None
 
 
+def expand_context(documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """For each retrieved chunk, also fetch adjacent chunks from the same document.
+    
+    This ensures the LLM sees the surrounding context even if only one chunk 
+    was highly similar to the query.
+    """
+    if not documents or not supabase:
+        return documents
+
+    expanded_map = {doc["id"]: doc for doc in documents}
+    
+    for doc in documents:
+        title = doc.get("document_title")
+        idx = doc.get("chunk_index")
+        
+        # Only expand if we have the necessary metadata
+        if title is None or idx is None:
+            continue
+            
+        # Fetch one chunk before and one after
+        for neighbor_idx in [idx - 1, idx + 1]:
+            if neighbor_idx < 0:
+                continue
+                
+            # Skip if we already have this chunk
+            # Note: We don't have the ID yet, so we'll check after fetching
+            try:
+                result = supabase.table("documents") \
+                    .select("id, content, document_title, source_url, manual_type, chunk_index, page_number, chunk_total") \
+                    .eq("document_title", title) \
+                    .eq("chunk_index", neighbor_idx) \
+                    .execute()
+                
+                if result.data:
+                    for row in result.data:
+                        if row["id"] not in expanded_map:
+                            expanded_map[row["id"]] = row
+            except Exception as e:
+                logger.warning(f"Failed to fetch neighbor chunk ({title}, {neighbor_idx}): {e}")
+
+    # Convert back to list
+    return list(expanded_map.values())
+
+
 def retrieve_relevant_documents(
     query: str,
     manual_type: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """Search Supabase for documents relevant to the query using vector similarity.
     
-    Returns a list of documents ordered by similarity.
+    Returns a list of documents including expanded context.
     """
     if not supabase:
         logger.error("Supabase client not initialized")
@@ -135,30 +179,39 @@ def retrieve_relevant_documents(
         return []
     
     try:
-        # Use Supabase vector search (requires pgvector extension)
-        # RPC call to search embeddings
+        # Use Supabase vector search
         response = supabase.rpc(
             "search_documents",
             {
                 "query_embedding": embedding,
-                "similarity_threshold": 0.1,  # Lowered to retrieve sample data when DB is sparse
+                "similarity_threshold": 0.1,
                 "match_count": RAG_CONTEXT_LIMIT,
                 "manual_type_filter": manual_type
             }
         ).execute()
         
+        raw_docs = []
         if hasattr(response, "data"):
-            return response.data
+            raw_docs = response.data
         elif isinstance(response, dict):
-            if response.get("error"):
-                logger.error(f"Vector search error: {response['error']}")
-                return []
-            return response.get("data", [])
+            raw_docs = response.get("data", [])
+            
+        if not raw_docs:
+            return []
+            
+        # Expand context to include neighbors
+        expanded_docs = expand_context(raw_docs)
         
-        return []
+        # Sort by document title then chunk index for logical flow
+        sorted_docs = sorted(expanded_docs, key=lambda x: (
+            x.get("document_title", ""), 
+            x.get("chunk_index", 0)
+        ))
+        
+        return sorted_docs
+        
     except Exception as e:
-        logger.warning(f"Vector search failed, returning empty: {e}")
-        # Fallback: return nothing if search fails
+        logger.warning(f"Vector search failed: {e}")
         return []
 
 
@@ -179,31 +232,42 @@ def generate_rag_response(
         "HTTP-Referer": "http://localhost:3000",  # Required by OpenRouter
     }
     
-    # Build context from retrieved documents
-    context_text = ""
+    # Build context grouped by document
+    context_parts = []
     if context_documents:
-        context_text = "\n\n---\n\n".join([
-            f"Source: {doc.get('document_title', 'Unknown')}\nURL: {doc.get('source_url', '')}\n{doc.get('content', '')}"
-            for doc in context_documents
-        ])
+        # Group chunks by document
+        docs_by_title = {}
+        for doc in context_documents:
+            title = doc.get('document_title', 'Unknown Document')
+            if title not in docs_by_title:
+                docs_by_title[title] = {
+                    "url": doc.get('source_url', ''),
+                    "chunks": []
+                }
+            docs_by_title[title]["chunks"].append(doc)
+            
+        for title, info in docs_by_title.items():
+            # Sort chunks by index within the document
+            sorted_chunks = sorted(info["chunks"], key=lambda x: x.get("chunk_index", 0))
+            combined_content = "\n[...]\n".join([c.get('content', '') for c in sorted_chunks])
+            
+            part = f"DOCUMENT: {title}\nURL: {info['url']}\nCONTENT:\n{combined_content}"
+            context_parts.append(part)
+            
+    context_text = "\n\n" + "\n\n---\n\n".join(context_parts) if context_parts else ""
     
     # Build system prompt
-    system_prompt = """You are a helpful AI support assistant for sayo.ai, an educational platform designed to assist teachers and students.
+    system_prompt = """You are a helpful AI support assistant for sayo.ai, an educational platform for teachers and students.
 
-Your role is to help users with any questions or issues they encounter while using Sayo, including:
-- How to use features and tools
-- Best practices for teaching/learning with Sayo
-- Technical troubleshooting
-- Navigating the platform
+Your role is to provide accurate, comprehensive answers based ONLY on the provided tutorial documents.
 
 Guidelines:
-1. ALWAYS base your answers on the provided tutorial documents and materials
-2. Follow the official Sayo documentation closely and recommend steps exactly as documented
-3. If the user's question is answered in the provided tutorials, cite the relevant source document using a clickable markdown format: [Document Title](URL). Make sure the link is embedded exactly like this so the user can click to refer to the Notion directly.
-4. If the answer is NOT in the provided materials, clearly state: "I don't have information about this in the Sayo documentation. Please contact Sayo support or check the latest tutorials."
-5. Do NOT make assumptions or provide information from outside sources - stick strictly to what's in the tutorials
-6. Be concise, clear, and helpful when guiding users through Sayo features
-7. If a user describes a problem, first try to help them using the tutorials, but if it seems to be a technical issue not covered, direct them to support"""
+1. RESPONSE ACCURACY: Always base your answers on the provided context documents. If the documents contain a step-by-step guide, provide the complete sequence.
+2. SOURCE CITATION: When you use information from a document, cite it using clickable markdown: [Document Title](URL).
+3. COHERENCE: The context is provided as chunks from documents. They are ordered correctly. Use them to form a coherent explanation.
+4. HONESTY: If the answer is NOT in the provided materials, say: "I don't have information about this in the Sayo documentation. Please contact Sayo support or check the latest tutorials."
+5. FOCUS: Do not use outside knowledge. Do not make assumptions.
+6. FORMATTING: Use clear bullet points or numbered lists for instructions. Keep the tone professional yet helpful."""
     
     # Build messages
     messages = [
@@ -308,14 +372,21 @@ def chat(request: ChatRequest):
     response_text = generate_rag_response(request.message, documents)
     
     # Format sources for response
-    sources = [
-        {
-            "title": doc.get("document_title", "Unknown"),
-            "type": doc.get("manual_type", "Unknown"),
-            "similarity": doc.get("similarity", 0)
-        }
-        for doc in documents
-    ]
+    sources = []
+    seen_sources = set()
+    for doc in documents:
+        title = doc.get("document_title", "Unknown")
+        # Only list unique documents in the simplified sources list if title exists,
+        # but the frontend might want specific page info
+        source_key = f"{title}_{doc.get('page_number', 0)}"
+        if source_key not in seen_sources:
+            sources.append({
+                "title": title,
+                "type": doc.get("manual_type", "Unknown"),
+                "page": doc.get("page_number"),
+                "similarity": doc.get("similarity", 0)
+            })
+            seen_sources.add(source_key)
     
     return ChatResponse(response=response_text, sources=sources)
 
