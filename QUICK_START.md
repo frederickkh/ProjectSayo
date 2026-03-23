@@ -11,6 +11,7 @@
 - Converts PDFs to text with OCR support
 - Generates embeddings via OpenRouter
 - Stores in Supabase with vector index
+- Supports --max-files and --dry-run for testing
 
 ✅ **Frontend Integration** (`frontend/app/actions/chat.ts`)
 - Updated to call backend RAG API
@@ -119,6 +120,7 @@ Visit: http://localhost:3000
 OPENROUTER_API_KEY=your_key_here
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your_key_here
+RAG_CONTEXT_LIMIT=8
 ```
 
 ### Frontend (`.env.local`)
@@ -153,7 +155,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 1. **Customize the system**:
    - Change embedding model in `.env`
-   - Adjust RAG context limit (3 docs default)
+   - Adjust RAG context limit (8 docs default, up from 3)
    - Modify system prompt in `chat_api.py`
 
 2. **Add more documents**:

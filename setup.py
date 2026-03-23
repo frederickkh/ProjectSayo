@@ -104,7 +104,7 @@ SUPABASE_SERVICE_ROLE_KEY={supabase_key}
 NOTION_EXPORT_DIR=./backend/Notion_Export
 EMBEDDING_MODEL=openai/text-embedding-3-small
 CHAT_MODEL=openrouter/auto
-RAG_CONTEXT_LIMIT=3
+RAG_CONTEXT_LIMIT=8
 ENABLE_OCR=true
 """
     

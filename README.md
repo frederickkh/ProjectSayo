@@ -4,8 +4,9 @@
 
 This project implements a Retrieval-Augmented Generation (RAG) system for an AI chatbot:
 - **Backend**: Python FastAPI server with Supabase vector search
-- **Frontend**: Next.js chat UI
+- **Frontend**: Next.js 14+ chat UI with Markdown/Code highlighting
 - **APIs**: OpenRouter (for embeddings & chat), Supabase (for vector storage)
+- **Features**: Semantic search with context expansion (neighboring chunks), source citations with clickable links, and teacher/student document filtering.
 
 ## System Architecture
 
@@ -16,6 +17,7 @@ FastAPI Backend (chat_api.py)
     ↓
 OpenRouter API (embeddings + chat)
 Supabase Vector DB (document storage)
+Neighboring Context Expansion (Logic)
 ```
 
 ## Prerequisites
@@ -44,7 +46,7 @@ SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 EMBEDDING_MODEL=openai/text-embedding-3-small
 CHAT_MODEL=openrouter/auto
-RAG_CONTEXT_LIMIT=3
+RAG_CONTEXT_LIMIT=8
 NOTION_EXPORT_DIR=./backend/Notion_Export
 ```
 
@@ -73,6 +75,7 @@ python ingest_notion_pdfs.py
 ```bash
 python ingest_notion_pdfs.py --dry-run      # Preview without saving
 python ingest_notion_pdfs.py --verbose      # Detailed logging
+python ingest_notion_pdfs.py --max-files 5  # Process only the first 5 files
 python ingest_notion_pdfs.py --help         # Show all options
 ```
 
@@ -144,11 +147,12 @@ Content-Type: application/json
 **Response:**
 ```json
 {
-    "response": "Active learning is a pedagogical approach...",
+    "response": "Active learning is a pedagogical approach... According to the [Grading Guide](https://notion.so/...), you should...",
     "sources": [
         {
             "title": "AI_Reading_Guide.pdf",
             "type": "teacher",
+            "page": 4,
             "similarity": 0.87
         }
     ]
@@ -214,6 +218,14 @@ SELECT COUNT(*) FROM documents;
 SELECT document_title, COUNT(*) as chunks FROM documents GROUP BY document_title;
 SELECT * FROM documents WHERE embedding IS NOT NULL LIMIT 5;
 ```
+
+### Tuning Search Results
+
+1. **RAG Context Limit**: Adjust `RAG_CONTEXT_LIMIT` in `.env`.
+   - Higher values (default 8) provide more context but increase token usage.
+2. **Similarity Threshold**: Currently hardcoded to 0.1 in `chat_api.py`.
+   - Increase this (e.g., to 0.2-0.3) to require higher relevancy.
+3. **Context Expansion**: The system automatically retrieves chunks immediately before and after the most relevant hits. This ensures the LLM sees the complete context of a procedure or explanation that might span across chunks.
 
 ## Production Deployment
 
