@@ -141,7 +141,7 @@ def retrieve_relevant_documents(
             "search_documents",
             {
                 "query_embedding": embedding,
-                "similarity_threshold": 0.5,
+                "similarity_threshold": 0.1,  # Lowered to retrieve sample data when DB is sparse
                 "match_count": RAG_CONTEXT_LIMIT,
                 "manual_type_filter": manual_type
             }
@@ -183,7 +183,7 @@ def generate_rag_response(
     context_text = ""
     if context_documents:
         context_text = "\n\n---\n\n".join([
-            f"Source: {doc.get('document_title', 'Unknown')}\n{doc.get('content', '')}"
+            f"Source: {doc.get('document_title', 'Unknown')}\nURL: {doc.get('source_url', '')}\n{doc.get('content', '')}"
             for doc in context_documents
         ])
     
@@ -199,7 +199,7 @@ Your role is to help users with any questions or issues they encounter while usi
 Guidelines:
 1. ALWAYS base your answers on the provided tutorial documents and materials
 2. Follow the official Sayo documentation closely and recommend steps exactly as documented
-3. If the user's question is answered in the provided tutorials, cite the relevant source document
+3. If the user's question is answered in the provided tutorials, cite the relevant source document using a clickable markdown format: [Document Title](URL). Make sure the link is embedded exactly like this so the user can click to refer to the Notion directly.
 4. If the answer is NOT in the provided materials, clearly state: "I don't have information about this in the Sayo documentation. Please contact Sayo support or check the latest tutorials."
 5. Do NOT make assumptions or provide information from outside sources - stick strictly to what's in the tutorials
 6. Be concise, clear, and helpful when guiding users through Sayo features
