@@ -188,13 +188,18 @@ def clean_text(raw: str, header_lines: Optional[set] = None) -> str:
 
 def identify_common_headers(all_pages: List[str]) -> set:
     """Return a set of lines that appear on many pages (e.g. headers/footers)."""
+    if len(all_pages) < 3:
+        return set()
+        
     freq: Dict[str, int] = {}
     for page in all_pages:
         for line in set(page.splitlines()):
             stripped = line.strip()
             if stripped:
                 freq[stripped] = freq.get(stripped, 0) + 1
-    threshold = max(1, len(all_pages) // 2)
+                
+    # Threshold: must appear in at least 2 pages AND more than half the pages
+    threshold = max(2, len(all_pages) // 2 + 1)
     return {line for line, count in freq.items() if count >= threshold}
 
 
@@ -333,8 +338,7 @@ def insert_into_supabase(
             raise e
 
 
-def hash_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+# ── Utility Functions ───────────────────────────────────────────────────────
 
 
 def output_chunks_to_file(rows: List[Dict[str, Any]], output_file: str = "output.txt") -> None:
@@ -406,6 +410,11 @@ def main():
         default=None,
         help="Maximum number of PDF files to process"
     )
+    parser.add_argument(
+        "--failed-log",
+        default="failed_files.txt",
+        help="Log file for files that failed ingestion (default: failed_files.txt)"
+    )
     args = parser.parse_args()
     
     # Reconfigure logging if verbose
@@ -441,19 +450,21 @@ def main():
     else:
         supabase = None
     
-    # Clear output file at start
+    # Clear output and failed files log at start
     with open(args.output_file, "w", encoding="utf-8") as f:
         f.write("CHUNK OUTPUT LOG\n")
         f.write(f"Generated at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"Dry-run mode: {args.dry_run}\n")
         f.write("=" * 80 + "\n\n")
+
+    with open(args.failed_log, "w", encoding="utf-8") as f:
+        f.write("# FAILED INGESTION LOG\n")
+        f.write(f"# Generated at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
     
     # Statistics
     total_files = 0
     total_chunks = 0
     total_ocr_pages = 0
-    total_skipped = 0
-    seen_hashes: set = set()
     errors: List[str] = []
     
     # Walk through PDFs
@@ -472,14 +483,18 @@ def main():
             total_files += 1
             path = os.path.join(root, fname)
             
-            # Detect manual type from directory structure
+            # 1. Start by checking path and filename for keywords (English and Chinese)
             manual_type = ""
-            if "teacher" in root.lower():
+            path_lower = (root + os.sep + fname).lower()
+            teacher_keywords = ["teacher", "教師", "老師", "教員"]
+            student_keywords = ["student", "學生", "學員"]
+            
+            if any(k in path_lower for k in teacher_keywords):
                 manual_type = "teacher"
-            elif "student" in root.lower():
+            elif any(k in path_lower for k in student_keywords):
                 manual_type = "student"
             
-            logger.info(f"[{total_files}] Processing: {fname} (type={manual_type or 'unknown'})")
+            logger.info(f"[{total_files}] Processing: {fname}")
             
             try:
                 # Extract text from PDF
@@ -488,9 +503,20 @@ def main():
 
                 if not pages:
                     logger.warning(f"  ⚠ No text extracted from {fname}")
+                    with open(args.failed_log, "a", encoding="utf-8") as f:
+                        f.write(f"{path}\n")
                     errors.append(f"{fname}: No text extracted")
                     continue
 
+                # 2. If still unknown, check first two pages of content for common markers
+                if not manual_type:
+                    content_sample = "\n".join(pages[:2]).lower()
+                    if any(k in content_sample for k in teacher_keywords):
+                        manual_type = "teacher"
+                    elif any(k in content_sample for k in student_keywords):
+                        manual_type = "student"
+                
+                logger.debug(f"  Manual type identified: {manual_type or 'unknown'}")
                 logger.debug(f"  Extracted {len(pages)} pages, OCR used on {ocr_count} pages")
 
                 # Identify common headers/footers
@@ -518,6 +544,9 @@ def main():
 
                 if not all_chunks:
                     logger.warning(f"  ⚠ No chunks produced from {fname}")
+                    with open(args.failed_log, "a", encoding="utf-8") as f:
+                        f.write(f"{path}\n")
+                    errors.append(f"{fname}: No chunks produced")
                     continue
 
                 chunk_total = len(all_chunks)
@@ -538,12 +567,6 @@ def main():
                 for chunk_index, ((chunked_str, _section, pg_num), emb) in enumerate(
                     zip(all_chunks, embeddings)
                 ):
-                    h = hash_text(chunked_str)
-                    if h in seen_hashes:
-                        total_skipped += 1
-                        continue
-
-                    seen_hashes.add(h)
                     row = {
                         "content": chunked_str,
                         "embedding": emb,
@@ -573,6 +596,8 @@ def main():
             
             except Exception as e:
                 logger.error(f"  ✗ Failed to process {fname}: {e}")
+                with open(args.failed_log, "a", encoding="utf-8") as f:
+                    f.write(f"{path}\n")
                 errors.append(f"{fname}: {str(e)}")
                 continue
     
@@ -583,20 +608,22 @@ def main():
     print(f"\n📊 Summary:")
     print(f"  Files processed:    {total_files}")
     print(f"  Chunks created:     {total_chunks}")
-    print(f"  Chunks skipped:     {total_skipped} (duplicates)")
     print(f"  OCR pages used:     {total_ocr_pages}")
     print(f"  Dry-run mode:       {args.dry_run}")
     
     if errors:
-        print(f"\n⚠️  Errors encountered ({len(errors)}):")
-        for error in errors:
+        print(f"\n⚠️  Errors/Failures encountered ({len(errors)}):")
+        for error in errors[:10]: # show first 10
             print(f"   - {error}")
+        if len(errors) > 10:
+            print(f"   ... and {len(errors)-10} more")
+        print(f"\n📝 See failed file paths here: {args.failed_log}")
     
     if args.dry_run:
         print(f"\n✓ Preview saved to: {args.output_file}")
         print("  Run without --dry-run to insert into database")
     else:
-        print(f"\n✓ Data successfully ingested into Supabase!")
+        print(f"\n✓ Process complete. Data ingested into Supabase.")
 
 
 if __name__ == "__main__":

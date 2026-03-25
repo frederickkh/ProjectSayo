@@ -16,11 +16,12 @@ type Message = {
 };
 
 const WELCOME_PROMPTS = [
-  "How do I access my student dashboard?",
-  "How do I create a class in Sayo Academy?",
-  "How do I use the AI grading feature?",
-  "How do I invite students to my class?",
+  "How do I set up a classroom?",
+  "How do I join a class with a code?",
+  "What English practice tools are available here?",
+  "Does Sayo support Chinese language learning?",
 ];
+
 
 export default function ChatSkeleton() {
   const [messages, setMessages] = useState<Message[]>([]);
