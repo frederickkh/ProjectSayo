@@ -4,7 +4,12 @@
 
 This project implements a Retrieval-Augmented Generation (RAG) system for an AI chatbot:
 - **Backend**: Python FastAPI server with Supabase vector search
-- **Frontend**: Next.js 14+ chat UI with Markdown/Code highlighting
+- **Frontend**: Next.js 14+ premium chat UI with:
+    - **Markdown & Code Rendering**: Full support for bullet points, headers, tables, and clickable links via `react-markdown`.
+    - **Syntax Highlighting**: Beautiful code blocks with language-specific highlighting and a **copy-to-clipboard** button.
+    - **ChatGPT-like Aesthetics**: Modern card-based welcome screen, premium input area with backdrop-blur, and improved message layouts.
+    - **Interactive History Sidebar**: Slide-in panel to manage and switch between past conversations.
+    - **Dark Mode**: Complete support for both light and dark themes with a quick toggle.
 - **APIs**: OpenRouter (for embeddings & chat), Supabase (for vector storage)
 - **Features**: Semantic search with context expansion (neighboring chunks), source citations with clickable links, and teacher/student document filtering.
 
