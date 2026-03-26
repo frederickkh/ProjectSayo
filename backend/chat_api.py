@@ -184,7 +184,7 @@ def retrieve_relevant_documents(
             "search_documents",
             {
                 "query_embedding": embedding,
-                "similarity_threshold": 0.5,
+                "similarity_threshold": 0.2,
                 "match_count": RAG_CONTEXT_LIMIT,
                 "manual_type_filter": manual_type
             }
