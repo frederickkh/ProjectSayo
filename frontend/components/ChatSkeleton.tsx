@@ -20,6 +20,7 @@ type Conversation = {
   id: number;
   title: string;
   messages: Message[];
+  sessionId?: string;
 };
 
 const WELCOME_PROMPTS = [
@@ -37,6 +38,7 @@ export default function ChatSkeleton() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<number | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -46,19 +48,23 @@ export default function ChatSkeleton() {
   // Save current messages as a conversation when starting a new one
   const saveCurrentConversation = () => {
     if (messages.length === 0) return;
-    const title = messages[0].text.slice(0, 40) + (messages[0].text.length > 40 ? "..." : "");
-    const newConversation: Conversation = {
-      id: Date.now(),
-      title,
-      messages,
-    };
-    setConversations((prev) => [newConversation, ...prev]);
+    setConversations((prev) => {
+      const existingIdx = prev.findIndex(c => c.id === activeConversationId);
+      if (existingIdx !== -1) {
+        const updated = [...prev];
+        updated[existingIdx] = { ...updated[existingIdx], messages, sessionId: activeSessionId || undefined };
+        return updated;
+      }
+      const title = messages[0].text.slice(0, 40) + (messages[0].text.length > 40 ? "..." : "");
+      return [{ id: activeConversationId || Date.now(), title, messages, sessionId: activeSessionId || undefined }, ...prev];
+    });
   };
 
   const handleNewChat = () => {
     saveCurrentConversation();
     setMessages([]);
     setActiveConversationId(null);
+    setActiveSessionId(null);
     setSidebarOpen(false);
   };
 
@@ -66,6 +72,7 @@ export default function ChatSkeleton() {
     saveCurrentConversation();
     setMessages(conversation.messages);
     setActiveConversationId(conversation.id);
+    setActiveSessionId(conversation.sessionId || null);
     setSidebarOpen(false);
   };
 
@@ -84,10 +91,16 @@ export default function ChatSkeleton() {
     setLoading(true);
 
     try {
-      const botResponse = await sendMessage(input);
+      const response = await sendMessage(input, undefined, activeSessionId);
+      if (response.sessionId && !activeSessionId) {
+        setActiveSessionId(response.sessionId);
+        if (!activeConversationId) {
+          setActiveConversationId(Date.now());
+        }
+      }
       const botMessage: Message = {
         id: Date.now() + 1,
-        text: botResponse,
+        text: response.text,
         sender: "bot",
         timestamp: new Date(),
       };

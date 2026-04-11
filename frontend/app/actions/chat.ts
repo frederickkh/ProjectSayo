@@ -4,6 +4,7 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export interface ChatResponse {
     response: string;
+    session_id: string;
     sources: Array<{
         title: string;
         type: string;
@@ -11,7 +12,7 @@ export interface ChatResponse {
     }>;
 }
 
-export async function sendMessage(message: string, manualType?: string): Promise<string> {
+export async function sendMessage(message: string, manualType?: string, sessionId?: string | null): Promise<{ text: string; sessionId: string }> {
     try {
         const response = await fetch(`${API_BASE_URL}/chat`, {
             method: "POST",
@@ -20,26 +21,28 @@ export async function sendMessage(message: string, manualType?: string): Promise
             },
             body: JSON.stringify({
                 message: message,
-                manual_type: manualType || null
+                manual_type: manualType || null,
+                session_id: sessionId || null
             }),
         });
 
         if (!response.ok) {
             console.error("Chat API error:", response.status, response.statusText);
-            return "Sorry, I couldn't generate a response. Please try again.";
+            return { text: "Sorry, I couldn't generate a response. Please try again.", sessionId: sessionId || "" };
         }
 
         const data: ChatResponse = await response.json();
-        return data.response;
+        return { text: data.response, sessionId: data.session_id };
     } catch (error) {
         console.error("Chat error:", error);
-        return "Sorry, I encountered an error. Please check that the backend server is running.";
+        return { text: "Sorry, I encountered an error. Please check that the backend server is running.", sessionId: sessionId || "" };
     }
 }
 
 export async function sendMessageWithSources(
     message: string,
-    manualType?: string
+    manualType?: string,
+    sessionId?: string | null
 ): Promise<ChatResponse> {
     try {
         const response = await fetch(`${API_BASE_URL}/chat`, {
@@ -49,7 +52,8 @@ export async function sendMessageWithSources(
             },
             body: JSON.stringify({
                 message: message,
-                manual_type: manualType || null
+                manual_type: manualType || null,
+                session_id: sessionId || null
             }),
         });
 
@@ -57,7 +61,8 @@ export async function sendMessageWithSources(
             console.error("Chat API error:", response.status, response.statusText);
             return {
                 response: "Sorry, I couldn't generate a response. Please try again.",
-                sources: []
+                sources: [],
+                session_id: sessionId || ""
             };
         }
 
@@ -66,7 +71,8 @@ export async function sendMessageWithSources(
         console.error("Chat error:", error);
         return {
             response: "Sorry, I encountered an error. Please check that the backend server is running.",
-            sources: []
+            sources: [],
+            session_id: sessionId || ""
         };
     }
 }
