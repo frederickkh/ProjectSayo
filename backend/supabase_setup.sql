@@ -48,22 +48,55 @@ RETURNS TABLE (
 ) AS $$
 BEGIN
     RETURN QUERY
-    SELECT
-        documents.id,
-        documents.content,
-        documents.document_title,
-        documents.source_url,
-        documents.manual_type,
-        documents.chunk_index,
-        documents.page_number,
-        documents.chunk_total,
-        (1 - (documents.embedding <=> query_embedding)) as similarity
-    FROM documents
-    WHERE
-        (1 - (documents.embedding <=> query_embedding)) > similarity_threshold
-        AND (manual_type_filter IS NULL OR documents.manual_type = manual_type_filter)
-    ORDER BY documents.embedding <=> query_embedding
-    LIMIT match_count;
+    WITH matched AS (
+        -- Step 1: Find top-K chunks by cosine similarity (same as before)
+        SELECT
+            d.id,
+            d.content,
+            d.document_title,
+            d.source_url,
+            d.manual_type,
+            d.chunk_index,
+            d.page_number,
+            d.chunk_total,
+            (1 - (d.embedding <=> query_embedding)) AS similarity
+        FROM documents d
+        WHERE
+            (1 - (d.embedding <=> query_embedding)) > similarity_threshold
+            AND (manual_type_filter IS NULL OR d.manual_type = manual_type_filter)
+        ORDER BY d.embedding <=> query_embedding
+        LIMIT match_count
+    ),
+    -- Step 2: Collect all needed chunk indices (matched ± 1)
+    needed_indices AS (
+        SELECT DISTINCT
+            m.document_title AS title,
+            idx AS target_idx
+        FROM matched m,
+             LATERAL unnest(ARRAY[m.chunk_index - 1, m.chunk_index, m.chunk_index + 1]) AS idx
+        WHERE idx >= 0
+    ),
+    -- Step 3: Fetch all needed chunks (matched + neighbors) in one pass
+    expanded AS (
+        SELECT DISTINCT ON (d.id)
+            d.id,
+            d.content,
+            d.document_title,
+            d.source_url,
+            d.manual_type,
+            d.chunk_index,
+            d.page_number,
+            d.chunk_total,
+            COALESCE(m.similarity, 0.0) AS similarity
+        FROM needed_indices ni
+        JOIN documents d
+            ON d.document_title = ni.title
+            AND d.chunk_index = ni.target_idx
+        LEFT JOIN matched m
+            ON m.id = d.id
+    )
+    SELECT * FROM expanded
+    ORDER BY expanded.document_title, expanded.chunk_index;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -105,9 +138,18 @@ FROM documents
 ORDER BY created_at DESC
 LIMIT 100;
 
+-- Optional: Create a table for logging chat sessions
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
 -- Optional: Create a table for logging chat interactions
 CREATE TABLE IF NOT EXISTS chat_history (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id UUID REFERENCES chat_sessions(id) ON DELETE CASCADE,
     user_message TEXT NOT NULL,
     bot_response TEXT NOT NULL,
     sources JSONB,
@@ -116,21 +158,27 @@ CREATE TABLE IF NOT EXISTS chat_history (
 );
 
 CREATE INDEX IF NOT EXISTS chat_history_created_at_idx ON chat_history(created_at);
+CREATE INDEX IF NOT EXISTS chat_history_session_id_idx ON chat_history(session_id);
 
 -- Optional: Create a function to log chat interactions
 CREATE OR REPLACE FUNCTION log_chat_interaction(
-    user_message TEXT,
-    bot_response TEXT,
-    sources JSONB,
-    manual_type_filter TEXT DEFAULT NULL
+    p_session_id UUID,
+    p_user_message TEXT,
+    p_bot_response TEXT,
+    p_sources JSONB,
+    p_manual_type_filter TEXT DEFAULT NULL
 )
 RETURNS UUID AS $$
 DECLARE
     interaction_id UUID;
 BEGIN
-    INSERT INTO chat_history (user_message, bot_response, sources, manual_type_filter)
-    VALUES (user_message, bot_response, sources, manual_type_filter)
+    INSERT INTO chat_history (session_id, user_message, bot_response, sources, manual_type_filter)
+    VALUES (p_session_id, p_user_message, p_bot_response, p_sources, p_manual_type_filter)
     RETURNING id INTO interaction_id;
+    
+    -- Update session updated_at timestamp
+    UPDATE chat_sessions SET updated_at = NOW() WHERE id = p_session_id;
+    
     RETURN interaction_id;
 END;
 $$ LANGUAGE plpgsql;
@@ -147,6 +195,17 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_total INTEGER;
 -- Add index for context expansion neighbour lookups
 CREATE INDEX IF NOT EXISTS documents_title_chunk_idx ON documents(document_title, chunk_index);
 
+-- Add session support to existing DB
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS session_id UUID REFERENCES chat_sessions(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS chat_history_session_id_idx ON chat_history(session_id);
+
 -- After running the above, also re-run the CREATE OR REPLACE FUNCTION
--- search_documents(...) block above to update the RPC return signature.
+-- search_documents(...) and log_chat_interaction(...) blocks above to update the RPC return signature.
 -- ============================================================

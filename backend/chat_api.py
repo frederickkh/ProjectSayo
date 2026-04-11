@@ -76,11 +76,29 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     manual_type: Optional[str] = None  # Filter by "teacher" or "student"
+    session_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
     response: str
     sources: List[Dict[str, Any]] = []
+    session_id: str
+
+
+class SessionInfo(BaseModel):
+    id: str
+    title: Optional[str]
+    created_at: str
+    updated_at: str
+
+
+class SessionListResponse(BaseModel):
+    sessions: List[SessionInfo]
+
+
+class SessionHistoryResponse(BaseModel):
+    session_id: str
+    messages: List[Dict[str, Any]]
 
 
 # --- Helper Functions ---
@@ -116,48 +134,6 @@ def get_embedding(text: str) -> Optional[List[float]]:
         return None
 
 
-def expand_context(documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """For each retrieved chunk, also fetch adjacent chunks from the same document.
-    
-    This ensures the LLM sees the surrounding context even if only one chunk 
-    was highly similar to the query.
-    """
-    if not documents or not supabase:
-        return documents
-
-    expanded_map = {doc["id"]: doc for doc in documents}
-    
-    for doc in documents:
-        title = doc.get("document_title")
-        idx = doc.get("chunk_index")
-        
-        # Only expand if we have the necessary metadata
-        if title is None or idx is None:
-            continue
-            
-        # Fetch one chunk before and one after
-        for neighbor_idx in [idx - 1, idx + 1]:
-            if neighbor_idx < 0:
-                continue
-                
-            # Skip if we already have this chunk
-            # Note: We don't have the ID yet, so we'll check after fetching
-            try:
-                result = supabase.table("documents") \
-                    .select("id, content, document_title, source_url, manual_type, chunk_index, page_number, chunk_total") \
-                    .eq("document_title", title) \
-                    .eq("chunk_index", neighbor_idx) \
-                    .execute()
-                
-                if result.data:
-                    for row in result.data:
-                        if row["id"] not in expanded_map:
-                            expanded_map[row["id"]] = row
-            except Exception as e:
-                logger.warning(f"Failed to fetch neighbor chunk ({title}, {neighbor_idx}): {e}")
-
-    # Convert back to list
-    return list(expanded_map.values())
 
 
 def retrieve_relevant_documents(
@@ -166,7 +142,8 @@ def retrieve_relevant_documents(
 ) -> List[Dict[str, Any]]:
     """Search Supabase for documents relevant to the query using vector similarity.
     
-    Returns a list of documents including expanded context.
+    The SQL function handles context expansion (neighbor chunks) and sorting
+    in a single query, eliminating the need for extra round-trips.
     """
     if not supabase:
         logger.error("Supabase client not initialized")
@@ -179,7 +156,8 @@ def retrieve_relevant_documents(
         return []
     
     try:
-        # Use Supabase vector search
+        # Use Supabase vector search (SQL function returns matched chunks
+        # + neighbor chunks, already sorted by document_title/chunk_index)
         response = supabase.rpc(
             "search_documents",
             {
@@ -190,25 +168,13 @@ def retrieve_relevant_documents(
             }
         ).execute()
         
-        raw_docs = []
+        docs = []
         if hasattr(response, "data"):
-            raw_docs = response.data
+            docs = response.data
         elif isinstance(response, dict):
-            raw_docs = response.get("data", [])
+            docs = response.get("data", [])
             
-        if not raw_docs:
-            return []
-            
-        # Expand context to include neighbors
-        expanded_docs = expand_context(raw_docs)
-        
-        # Sort by document title then chunk index for logical flow
-        sorted_docs = sorted(expanded_docs, key=lambda x: (
-            x.get("document_title", ""), 
-            x.get("chunk_index", 0)
-        ))
-        
-        return sorted_docs
+        return docs if docs else []
         
     except Exception as e:
         logger.warning(f"Vector search failed: {e}")
@@ -217,14 +183,15 @@ def retrieve_relevant_documents(
 
 def generate_rag_response(
     user_message: str,
-    context_documents: List[Dict[str, Any]]
+    context_documents: List[Dict[str, Any]],
+    chat_history: Optional[List[Dict[str, str]]] = None
 ) -> str:
     """Generate a response using OpenRouter with RAG context."""
     
     # Check if API key is configured
     if not OPENROUTER_API_KEY or OPENROUTER_API_KEY == "your_openrouter_api_key_here":
         logger.warning("OpenRouter API key not configured, using demo response")
-        return generate_demo_response(user_message, context_documents)
+        return generate_demo_response(user_message, context_documents, chat_history)
     
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -251,7 +218,12 @@ def generate_rag_response(
             sorted_chunks = sorted(info["chunks"], key=lambda x: x.get("chunk_index", 0))
             combined_content = "\n[...]\n".join([c.get('content', '') for c in sorted_chunks])
             
-            part = f"DOCUMENT: {title}\nURL: {info['url']}\nCONTENT:\n{combined_content}"
+            # Only include URL line if a real source_url exists
+            url = info['url'].strip() if info['url'] else ''
+            if url:
+                part = f"DOCUMENT: {title}\nURL: {url}\nCONTENT:\n{combined_content}"
+            else:
+                part = f"DOCUMENT: {title}\nCONTENT:\n{combined_content}"
             context_parts.append(part)
             
     context_text = "\n\n" + "\n\n---\n\n".join(context_parts) if context_parts else ""
@@ -264,10 +236,10 @@ Your role is to provide accurate, comprehensive answers based ONLY on the provid
 Guidelines:
 1. RESPONSE ACCURACY: Always base your answers on the provided context documents. If the documents contain a step-by-step guide, provide the complete sequence precisely.
 2. SOURCE CITATION: Do NOT include document names or links within the body of your response or at the end of each sentence. Instead, provide all relevant sources at the very end of your response in a single, well-formatted sentence.
-3. CITATION FORMAT: Use the following format for the citation sentence: "For more details, please refer to: [Document Title 1](URL1), [Document Title 2](URL2)."
+3. CITATION FORMAT: ONLY cite documents that have a URL provided in the context. Use this format: "For more details, please refer to: [Document Title](URL)". If a document has NO URL field, cite it by name only without a link. NEVER invent, guess, or fabricate any URL.
 4. RELEVANCE: Only cite documents that you actually used to answer the question. If a document is in the context but unrelated to the specific question, ignore it.
 5. HONESTY: If the answer is NOT in the provided materials, say: "I don't have information about this in the Sayo documentation. Please contact Sayo support or check the latest tutorials."
-6. FOCUS: Do not use outside knowledge. Do not make assumptions. DO NOT MAKE artificial websites or links.
+6. FOCUS: Do not use outside knowledge. Do not make assumptions. NEVER create, fabricate, or guess URLs or links. Only use URLs explicitly provided in the context documents.
 7. FORMATTING: Use clear bullet points or numbered lists for instructions. Keep the tone professional yet helpful."""
     
     # Build messages
@@ -277,6 +249,10 @@ Guidelines:
             "content": system_prompt
         }
     ]
+    
+    # Add chat history if available
+    if chat_history:
+        messages.extend(chat_history)
     
     # Add context to user message if available
     if context_text:
@@ -328,7 +304,7 @@ Guidelines:
         return f"Sorry, I encountered an error: {str(e)}"
 
 
-def generate_demo_response(user_message: str, context_documents: List[Dict[str, Any]]) -> str:
+def generate_demo_response(user_message: str, context_documents: List[Dict[str, Any]], chat_history: Optional[List[Dict[str, str]]] = None) -> str:
     """Generate a demo response for testing without OpenRouter API key."""
     
     if not context_documents:
@@ -354,13 +330,37 @@ def health_check():
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
-    """Chat endpoint with RAG context retrieval."""
+    """Chat endpoint with RAG context retrieval and session history."""
     
     if not request.message or not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     
     logger.info(f"Chat request: {request.message[:100]}...")
     
+    session_id = request.session_id
+    chat_history_msgs = []
+    
+    if session_id and supabase:
+        # Fetch previous history
+        try:
+            history_res = supabase.table('chat_history').select('*').eq('session_id', session_id).order('created_at').execute()
+            if hasattr(history_res, "data") and history_res.data:
+                for row in history_res.data:
+                    chat_history_msgs.append({"role": "user", "content": row["user_message"]})
+                    chat_history_msgs.append({"role": "assistant", "content": row["bot_response"]})
+        except Exception as e:
+            logger.warning(f"Failed to fetch chat history: {e}")
+    elif supabase and not session_id:
+        # Create a new session
+        try:
+            title = request.message[:50] + "..." if len(request.message) > 50 else request.message
+            session_res = supabase.table('chat_sessions').insert({"title": title}).execute()
+            if hasattr(session_res, "data") and session_res.data:
+                session_id = session_res.data[0]['id']
+        except Exception as e:
+            logger.warning(f"Failed to create chat session: {e}")
+            session_id = ""
+            
     # Retrieve relevant documents
     logger.info(f"Retrieving documents for query...")
     documents = retrieve_relevant_documents(
@@ -370,7 +370,7 @@ def chat(request: ChatRequest):
     logger.info(f"Retrieved {len(documents)} documents")
     
     # Generate response with RAG context
-    response_text = generate_rag_response(request.message, documents)
+    response_text = generate_rag_response(request.message, documents, chat_history_msgs)
     
     # Format sources for response
     sources = []
@@ -389,13 +389,62 @@ def chat(request: ChatRequest):
             })
             seen_sources.add(source_key)
     
-    return ChatResponse(response=response_text, sources=sources)
+    # Save interaction to history
+    if session_id and supabase:
+        try:
+            # We use the log_chat_interaction RPC
+            supabase.rpc(
+                "log_chat_interaction",
+                {
+                    "p_session_id": session_id,
+                    "p_user_message": request.message,
+                    "p_bot_response": response_text,
+                    "p_sources": sources,
+                    "p_manual_type_filter": request.manual_type
+                }
+            ).execute()
+        except Exception as e:
+            logger.warning(f"Failed to log interaction: {e}")
+            
+    if not session_id:
+        import uuid
+        session_id = str(uuid.uuid4())
+        
+    return ChatResponse(response=response_text, sources=sources, session_id=session_id)
 
 
 @app.post("/api/chat")
 def chat_endpoint(request: ChatRequest):
     """Alias endpoint for frontend compatibility."""
     return chat(request)
+
+
+@app.get("/api/sessions", response_model=SessionListResponse)
+def list_sessions():
+    """Retrieve list of chat sessions."""
+    if not supabase:
+        return SessionListResponse(sessions=[])
+    try:
+        res = supabase.table('chat_sessions').select('*').order('updated_at', desc=True).execute()
+        sessions = res.data if hasattr(res, "data") else res.get("data", [])
+        return SessionListResponse(sessions=sessions)
+    except Exception as e:
+        logger.error(f"Failed to list sessions: {e}")
+        return SessionListResponse(sessions=[])
+
+
+@app.get("/api/sessions/{session_id}", response_model=SessionHistoryResponse)
+def get_session_history(session_id: str):
+    """Retrieve chat history for a specific session."""
+    if not supabase:
+        return SessionHistoryResponse(session_id=session_id, messages=[])
+    try:
+        res = supabase.table('chat_history').select('*').eq('session_id', session_id).order('created_at').execute()
+        history = res.data if hasattr(res, "data") else res.get("data", [])
+        return SessionHistoryResponse(session_id=session_id, messages=history)
+    except Exception as e:
+        logger.error(f"Failed to get session history: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch history")
 
 
 # --- Startup/Shutdown ---
