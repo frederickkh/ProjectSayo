@@ -290,6 +290,27 @@ export default function ChatSkeleton() {
                           <ReactMarkdown
                             remarkPlugins={[remarkGfm]}
                             components={{
+                              pre({node, children, ...props}: any) {
+                                const text = String(children).replace(/^code\n/, "");
+                                // Check if this is a list (a., b., c. or 1., 2., 3. format)
+                                const isListFormat = /^[a-z]\.|^\d+\.|^[-•]\s|^\*\s/m.test(text);
+                                
+                                if (isListFormat) {
+                                  const lines = text.split('\n').filter((line: string) => line.trim());
+                                  return (
+                                    <div className="my-3 ml-2 space-y-1.5">
+                                      {lines.map((line: string, idx: number) => (
+                                        <div key={idx} className="text-sm text-slate-900 dark:text-slate-100 whitespace-pre-wrap">
+                                          {line}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  );
+                                }
+                                
+                                // Regular code block
+                                return <pre className="bg-slate-100 dark:bg-slate-700 rounded p-3 overflow-x-auto text-xs whitespace-pre-wrap" {...props}>{children}</pre>;
+                              },
                               code({node, inline, className, children, ...props}: any) {
                                 const match = /language-(\w+)/.exec(className || "");
                                 return !inline && match ? (
