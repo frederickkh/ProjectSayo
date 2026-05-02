@@ -141,6 +141,7 @@ LIMIT 100;
 -- Optional: Create a table for logging chat sessions
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    device_id TEXT NOT NULL,  -- Unique identifier per device/browser
     title TEXT,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
@@ -150,6 +151,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
 CREATE TABLE IF NOT EXISTS chat_history (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id UUID REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL,
     user_message TEXT NOT NULL,
     bot_response TEXT NOT NULL,
     sources JSONB,
@@ -198,14 +200,27 @@ CREATE INDEX IF NOT EXISTS documents_title_chunk_idx ON documents(document_title
 -- Add session support to existing DB
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    device_id TEXT NOT NULL,
     title TEXT,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
 ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS session_id UUID REFERENCES chat_sessions(id) ON DELETE CASCADE;
+ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS device_id TEXT;
 CREATE INDEX IF NOT EXISTS chat_history_session_id_idx ON chat_history(session_id);
+CREATE INDEX IF NOT EXISTS chat_history_device_id_idx ON chat_history(device_id);
 
 -- After running the above, also re-run the CREATE OR REPLACE FUNCTION
 -- search_documents(...) and log_chat_interaction(...) blocks above to update the RPC return signature.
 -- ============================================================
+
+CREATE TABLE document_embeddings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
+    model_name TEXT NOT NULL, -- e.g., 'text-embedding-3-small', 'bge-m3'
+    embedding vector,         -- Can be left without a strict dimension limit if models vary
+    UNIQUE(document_id, model_name) -- Ensure 1 embedding per model per chunk
+);
+-- Index
+CREATE INDEX embeddings_vector_idx ON document_embeddings USING ivfflat (embedding vector_cosine_ops);

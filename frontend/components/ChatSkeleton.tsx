@@ -3,7 +3,13 @@
 import { useState, useEffect, useRef } from "react";
 import { Sun, Moon, History, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import { sendMessage } from "@/app/actions/chat";
+import {
+  sendChatMessage,
+  getChatSessions,
+  getChatHistory,
+  ChatSession,
+  ChatMessage as ChatHistoryMessage,
+} from "@/lib/chatService";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -14,13 +20,6 @@ type Message = {
   text: string;
   sender: "user" | "bot";
   timestamp: Date;
-};
-
-type Conversation = {
-  id: number;
-  title: string;
-  messages: Message[];
-  sessionId?: string;
 };
 
 const WELCOME_PROMPTS = [
@@ -36,43 +35,81 @@ export default function ChatSkeleton() {
   const [loading, setLoading] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<number | null>(null);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [loadingSessions, setLoadingSessions] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  // Load chat sessions on mount
+  useEffect(() => {
+    const loadSessions = async () => {
+      try {
+        const chatSessions = await getChatSessions(20);
+        setSessions(chatSessions);
+        if (chatSessions.length > 0 && !activeSessionId) {
+          // Optionally load the most recent session
+          // setActiveSessionId(chatSessions[0].id);
+        }
+      } catch (error) {
+        console.error("Failed to load sessions:", error);
+      } finally {
+        setLoadingSessions(false);
+      }
+    };
+
+    loadSessions();
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
   }, [darkMode]);
 
-  // Save current messages as a conversation when starting a new one
-  const saveCurrentConversation = () => {
-    if (messages.length === 0) return;
-    setConversations((prev) => {
-      const existingIdx = prev.findIndex(c => c.id === activeConversationId);
-      if (existingIdx !== -1) {
-        const updated = [...prev];
-        updated[existingIdx] = { ...updated[existingIdx], messages, sessionId: activeSessionId || undefined };
-        return updated;
+  // Load chat history when session is selected
+  useEffect(() => {
+    const loadHistory = async () => {
+      if (!activeSessionId) return;
+
+      setLoadingHistory(true);
+      try {
+        const history = await getChatHistory(activeSessionId);
+        
+        // Convert history items to messages
+        const loadedMessages: Message[] = [];
+        for (const item of history) {
+          loadedMessages.push({
+            id: parseInt(item.id),
+            text: item.user_message,
+            sender: "user",
+            timestamp: new Date(item.created_at),
+          });
+          loadedMessages.push({
+            id: parseInt(item.id) + 0.5,
+            text: item.bot_response,
+            sender: "bot",
+            timestamp: new Date(item.created_at),
+          });
+        }
+
+        setMessages(loadedMessages);
+      } catch (error) {
+        console.error("Failed to load chat history:", error);
+      } finally {
+        setLoadingHistory(false);
       }
-      const title = messages[0].text.slice(0, 40) + (messages[0].text.length > 40 ? "..." : "");
-      return [{ id: activeConversationId || Date.now(), title, messages, sessionId: activeSessionId || undefined }, ...prev];
-    });
-  };
+    };
+
+    loadHistory();
+  }, [activeSessionId]);
 
   const handleNewChat = () => {
-    saveCurrentConversation();
     setMessages([]);
-    setActiveConversationId(null);
     setActiveSessionId(null);
     setSidebarOpen(false);
   };
 
-  const handleLoadConversation = (conversation: Conversation) => {
-    saveCurrentConversation();
-    setMessages(conversation.messages);
-    setActiveConversationId(conversation.id);
-    setActiveSessionId(conversation.sessionId || null);
+  const handleLoadSession = (session: ChatSession) => {
+    setActiveSessionId(session.id);
     setSidebarOpen(false);
   };
 
@@ -91,21 +128,26 @@ export default function ChatSkeleton() {
     setLoading(true);
 
     try {
-      const response = await sendMessage(input, undefined, activeSessionId);
-      if (response.sessionId && !activeSessionId) {
-        setActiveSessionId(response.sessionId);
-        if (!activeConversationId) {
-          setActiveConversationId(Date.now());
-        }
+      const response = await sendChatMessage(input, activeSessionId);
+      
+      // Update session ID if this is a new chat
+      if (!activeSessionId && response.session_id) {
+        setActiveSessionId(response.session_id);
+        
+        // Reload sessions to show the new one
+        const updatedSessions = await getChatSessions(20);
+        setSessions(updatedSessions);
       }
+
       const botMessage: Message = {
         id: Date.now() + 1,
-        text: response.text,
+        text: response.response,
         sender: "bot",
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, botMessage]);
     } catch (error) {
+      console.error("Chat error:", error);
       const errorMessage: Message = {
         id: Date.now() + 1,
         text: "Sorry, I couldn't generate a response. Please try again.",
@@ -167,24 +209,32 @@ export default function ChatSkeleton() {
           </button>
         </div>
 
-        {/* Conversation List */}
+        {/* Session List */}
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {conversations.length === 0 ? (
+          {loadingSessions ? (
+            <p className="text-xs text-slate-400 dark:text-slate-500 text-center mt-6 px-4">
+              Loading sessions...
+            </p>
+          ) : sessions.length === 0 ? (
             <p className="text-xs text-slate-400 dark:text-slate-500 text-center mt-6 px-4">
               No history yet. Start a conversation!
             </p>
           ) : (
-            conversations.map((conv) => (
+            sessions.map((session) => (
               <button
-                key={conv.id}
-                onClick={() => handleLoadConversation(conv)}
+                key={session.id}
+                onClick={() => handleLoadSession(session)}
                 className={`w-full text-left px-3 py-2 rounded-lg text-sm transition truncate ${
-                  activeConversationId === conv.id
+                  activeSessionId === session.id
                     ? "bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-medium"
                     : "text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
                 }`}
+                title={session.title}
               >
-                {conv.title}
+                <div className="truncate">{session.title}</div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  {session.message_count} messages
+                </div>
               </button>
             ))
           )}
@@ -215,7 +265,14 @@ export default function ChatSkeleton() {
 
         {/* Messages Container */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {messages.length === 0 ? (
+          {loadingHistory ? (
+            <div className="h-full flex items-center justify-center">
+              <div className="text-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                <p className="text-slate-600 dark:text-slate-400">Loading chat history...</p>
+              </div>
+            </div>
+          ) : messages.length === 0 ? (
             // Welcome State
             <div className="h-full flex flex-col items-center justify-center px-4">
               <div className="text-center mb-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
@@ -290,61 +347,7 @@ export default function ChatSkeleton() {
                           <ReactMarkdown
                             remarkPlugins={[remarkGfm]}
                             components={{
-                              pre({node, children, ...props}: any) {
-                                const text = String(children).replace(/^code\n/, "");
-                                // Check if this is a list (a., b., c. or 1., 2., 3. format)
-                                const isListFormat = /^[a-z]\.|^\d+\.|^[-•]\s|^\*\s/m.test(text);
-                                
-                                if (isListFormat) {
-                                  const lines = text.split('\n').filter((line: string) => line.trim());
-                                  return (
-                                    <div className="my-3 ml-2 space-y-1.5">
-                                      {lines.map((line: string, idx: number) => (
-                                        <div key={idx} className="text-sm text-slate-900 dark:text-slate-100 whitespace-pre-wrap">
-                                          {line}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  );
-                                }
-                                
-                                // Regular code block
-                                return <pre className="bg-slate-100 dark:bg-slate-700 rounded p-3 overflow-x-auto text-xs whitespace-pre-wrap" {...props}>{children}</pre>;
-                              },
-                              code({node, inline, className, children, ...props}: any) {
-                                const match = /language-(\w+)/.exec(className || "");
-                                return !inline && match ? (
-                                  <div className="relative group my-4">
-                                    <div className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                                      <button
-                                        onClick={() =>
-                                          navigator.clipboard.writeText(String(children))
-                                        }
-                                        className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 text-[10px] font-medium transition"
-                                      >
-                                        Copy
-                                      </button>
-                                    </div>
-                                    <SyntaxHighlighter
-                                      style={vscDarkPlus}
-                                      language={match[1]}
-                                      PreTag="div"
-                                      className="rounded-xl !bg-slate-900 !m-0 p-4 text-xs border border-slate-800"
-                                      {...props}
-                                    >
-                                      {String(children).replace(/\n$/, "")}
-                                    </SyntaxHighlighter>
-                                  </div>
-                                ) : (
-                                  <code
-                                    className={`${className} bg-slate-100 dark:bg-slate-700 px-1.5 py-0.5 rounded text-[0.9em] font-mono font-semibold text-blue-600 dark:text-blue-400`}
-                                    {...props}
-                                  >
-                                    {children}
-                                  </code>
-                                );
-                              },
-                              a: ({node, ...props}) => (
+                              a: ({ node, ...props }) => (
                                 <a
                                   {...props}
                                   target="_blank"
@@ -352,59 +355,20 @@ export default function ChatSkeleton() {
                                   className="text-blue-600 dark:text-blue-400 underline hover:no-underline font-semibold"
                                 />
                               ),
-                              ul: ({node, ...props}) => (
-                                <ul {...props} className="list-disc pl-5 my-3 space-y-2" />
-                              ),
-                              ol: ({node, ...props}) => (
-                                <ol {...props} className="list-decimal pl-5 my-3 space-y-2" />
-                              ),
-                              p: ({node, ...props}) => <p {...props} className="mb-3 last:mb-0" />,
-                              h1: ({node, ...props}) => (
-                                <h1
+                              ul: ({ node, ...props }) => (
+                                <ul
                                   {...props}
-                                  className="text-xl font-bold mt-6 mb-3 text-slate-900 dark:text-white"
+                                  className="list-disc pl-5 my-3 space-y-2"
                                 />
                               ),
-                              h2: ({node, ...props}) => (
-                                <h2
+                              ol: ({ node, ...props }) => (
+                                <ol
                                   {...props}
-                                  className="text-lg font-bold mt-5 mb-2 text-slate-900 dark:text-white"
+                                  className="list-decimal pl-5 my-3 space-y-2"
                                 />
                               ),
-                              h3: ({node, ...props}) => (
-                                <h3
-                                  {...props}
-                                  className="text-base font-bold mt-4 mb-2 text-slate-900 dark:text-white"
-                                />
-                              ),
-                              blockquote: ({node, ...props}) => (
-                                <blockquote
-                                  {...props}
-                                  className="border-l-4 border-blue-500 pl-4 italic my-4 text-slate-600 dark:text-slate-400 py-1"
-                                />
-                              ),
-                              hr: ({node, ...props}) => (
-                                <hr {...props} className="my-6 border-slate-200 dark:border-slate-700" />
-                              ),
-                              table: ({node, ...props}) => (
-                                <div className="overflow-x-auto my-4">
-                                  <table
-                                    {...props}
-                                    className="min-w-full divide-y divide-slate-200 dark:divide-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden"
-                                  />
-                                </div>
-                              ),
-                              th: ({node, ...props}) => (
-                                <th
-                                  {...props}
-                                  className="px-3 py-2 bg-slate-50 dark:bg-slate-900 text-left text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider"
-                                />
-                              ),
-                              td: ({node, ...props}) => (
-                                <td
-                                  {...props}
-                                  className="px-3 py-2 text-xs border-t border-slate-200 dark:border-slate-700"
-                                />
+                              p: ({ node, ...props }) => (
+                                <p {...props} className="mb-3 last:mb-0" />
                               ),
                             }}
                           >
@@ -425,7 +389,9 @@ export default function ChatSkeleton() {
 
                   {msg.sender === "user" && (
                     <div className="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-600 flex items-center justify-center flex-shrink-0 mt-1">
-                      <span className="text-slate-700 dark:text-slate-300 text-sm font-bold">U</span>
+                      <span className="text-slate-700 dark:text-slate-300 text-sm font-bold">
+                        U
+                      </span>
                     </div>
                   )}
                 </div>
@@ -438,9 +404,18 @@ export default function ChatSkeleton() {
                   </div>
                   <div className="flex items-center gap-1 px-4 py-3 bg-slate-100 dark:bg-slate-700 rounded-lg">
                     <div className="flex gap-1">
-                      <div className="w-2 h-2 rounded-full bg-slate-400 dark:bg-slate-500 animate-bounce" style={{ animationDelay: "0ms" }}></div>
-                      <div className="w-2 h-2 rounded-full bg-slate-400 dark:bg-slate-500 animate-bounce" style={{ animationDelay: "150ms" }}></div>
-                      <div className="w-2 h-2 rounded-full bg-slate-400 dark:bg-slate-500 animate-bounce" style={{ animationDelay: "300ms" }}></div>
+                      <div
+                        className="w-2 h-2 rounded-full bg-slate-400 dark:bg-slate-500 animate-bounce"
+                        style={{ animationDelay: "0ms" }}
+                      ></div>
+                      <div
+                        className="w-2 h-2 rounded-full bg-slate-400 dark:bg-slate-500 animate-bounce"
+                        style={{ animationDelay: "150ms" }}
+                      ></div>
+                      <div
+                        className="w-2 h-2 rounded-full bg-slate-400 dark:bg-slate-500 animate-bounce"
+                        style={{ animationDelay: "300ms" }}
+                      ></div>
                     </div>
                   </div>
                 </div>
@@ -470,8 +445,18 @@ export default function ChatSkeleton() {
               {loading ? (
                 <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
               ) : (
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 12h14M12 5l7 7-7 7" />
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2.5}
+                    d="M5 12h14M12 5l7 7-7 7"
+                  />
                 </svg>
               )}
             </button>

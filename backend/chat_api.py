@@ -157,6 +157,7 @@ class ChatRequest(BaseModel):
     message: str
     manual_type: Optional[str] = None  # Filter by "teacher" or "student"
     session_id: Optional[str] = None  # Session ID for tracking conversation
+    device_id: Optional[str] = None  # Device/browser identifier
 
 
 class SourceItem(BaseModel):
@@ -173,7 +174,31 @@ class ChatResponse(BaseModel):
     sources: List[SourceItem] = []
 
 
-# --- Async Helper Functions ---
+# Chat History Models
+class ChatHistoryItem(BaseModel):
+    id: str
+    user_message: str
+    bot_response: str
+    sources: Optional[List[SourceItem]] = []
+    created_at: str
+
+
+class ChatSession(BaseModel):
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+    message_count: int
+
+
+class ChatHistoryResponse(BaseModel):
+    sessions: List[ChatSession]
+    total_count: int
+
+
+class CreateSessionRequest(BaseModel):
+    device_id: str
+    title: Optional[str] = None
 
 async def get_embedding(text: str) -> Optional[List[float]]:
     """Generate embedding for text using OpenRouter with caching.
@@ -844,6 +869,147 @@ def health_check():
     }
 
 
+# --- Chat History Functions ---
+
+async def create_or_get_session(device_id: str, session_id: Optional[str] = None) -> str:
+    """Create a new chat session or return existing one for this device."""
+    if not supabase or not device_id:
+        return session_id or str(uuid.uuid4())
+    
+    try:
+        # If session_id provided, verify it exists and belongs to this device
+        if session_id:
+            result = supabase.table("chat_sessions").select("id").eq("id", session_id).eq("device_id", device_id).execute()
+            if result.data:
+                return session_id
+        
+        # Create new session
+        new_session_id = str(uuid.uuid4())
+        supabase.table("chat_sessions").insert({
+            "id": new_session_id,
+            "device_id": device_id,
+            "title": "New Chat",
+            "created_at": "now()",
+        }).execute()
+        
+        return new_session_id
+    except Exception as e:
+        logger.error(f"Failed to create session: {e}")
+        return session_id or str(uuid.uuid4())
+
+
+async def save_chat_message(
+    session_id: str,
+    device_id: str,
+    user_message: str,
+    bot_response: str,
+    sources: List[SourceItem],
+    manual_type: Optional[str] = None
+) -> bool:
+    """Save a chat message pair to the database."""
+    if not supabase:
+        return False
+    
+    try:
+        sources_json = [{"title": s.title, "url": s.url, "type": s.type, "page": s.page, "similarity": s.similarity} for s in sources]
+        
+        supabase.table("chat_history").insert({
+            "session_id": session_id,
+            "device_id": device_id,
+            "user_message": user_message,
+            "bot_response": bot_response,
+            "sources": sources_json,
+            "manual_type_filter": manual_type,
+            "created_at": "now()",
+        }).execute()
+        
+        # Update session title if it's still "New Chat"
+        session = supabase.table("chat_sessions").select("title").eq("id", session_id).execute()
+        if session.data and session.data[0].get("title") == "New Chat":
+            title = user_message[:50] + ("..." if len(user_message) > 50 else "")
+            supabase.table("chat_sessions").update({"title": title, "updated_at": "now()"}).eq("id", session_id).execute()
+        
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save chat message: {e}")
+        return False
+
+
+async def get_device_sessions(device_id: str, limit: int = 20) -> List[ChatSession]:
+    """Get all chat sessions for a device."""
+    if not supabase or not device_id:
+        return []
+    
+    try:
+        result = supabase.table("chat_sessions") \
+            .select("id, title, created_at, updated_at") \
+            .eq("device_id", device_id) \
+            .order("updated_at", desc=True) \
+            .limit(limit) \
+            .execute()
+        
+        sessions = []
+        if result.data:
+            for row in result.data:
+                # Count messages in this session
+                msg_result = supabase.table("chat_history") \
+                    .select("id", count="exact") \
+                    .eq("session_id", row["id"]) \
+                    .execute()
+                
+                message_count = msg_result.count if hasattr(msg_result, 'count') else len(msg_result.data or [])
+                
+                sessions.append(ChatSession(
+                    id=row["id"],
+                    title=row["title"],
+                    created_at=row["created_at"],
+                    updated_at=row["updated_at"],
+                    message_count=message_count
+                ))
+        
+        return sessions
+    except Exception as e:
+        logger.error(f"Failed to get sessions: {e}")
+        return []
+
+
+async def get_session_history(session_id: str) -> List[ChatHistoryItem]:
+    """Get all messages in a chat session."""
+    if not supabase:
+        return []
+    
+    try:
+        result = supabase.table("chat_history") \
+            .select("id, user_message, bot_response, sources, created_at") \
+            .eq("session_id", session_id) \
+            .order("created_at", desc=False) \
+            .execute()
+        
+        history = []
+        if result.data:
+            for row in result.data:
+                sources = []
+                if row.get("sources"):
+                    try:
+                        sources_data = row["sources"] if isinstance(row["sources"], list) else []
+                        sources = [SourceItem(**s) for s in sources_data]
+                    except Exception as e:
+                        logger.debug(f"Failed to parse sources: {e}")
+                
+                history.append(ChatHistoryItem(
+                    id=row["id"],
+                    user_message=row["user_message"],
+                    bot_response=row["bot_response"],
+                    sources=sources,
+                    created_at=row["created_at"]
+                ))
+        
+        return history
+    except Exception as e:
+        logger.error(f"Failed to get session history: {e}")
+        return []
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """Chat endpoint with RAG context retrieval (FIXED VERSION)."""
@@ -851,10 +1017,11 @@ async def chat(request: ChatRequest):
     if not request.message or not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     
-    # Use provided session ID or generate a new one
-    session_id = request.session_id or str(uuid.uuid4())
+    # Create or get session for this device
+    device_id = request.device_id or "anonymous"
+    session_id = await create_or_get_session(device_id, request.session_id)
     
-    logger.info(f"Chat request: {request.message[:100]}...")
+    logger.info(f"Chat request: {request.message[:100]}... (device: {device_id}, session: {session_id})")
     
     documents = await retrieve_relevant_documents(
         request.message,
@@ -867,6 +1034,16 @@ async def chat(request: ChatRequest):
     # Generate response with RAG context
     # The model now handles source citations per the system prompt
     response_text = await generate_rag_response(request.message, documents, sources)
+    
+    # Save chat message to history
+    await save_chat_message(
+        session_id,
+        device_id,
+        request.message,
+        response_text,
+        sources,
+        request.manual_type
+    )
 
     return ChatResponse(response=response_text, session_id=session_id, sources=sources)
 
@@ -875,6 +1052,27 @@ async def chat(request: ChatRequest):
 async def chat_endpoint(request: ChatRequest):
     """Alias endpoint for frontend compatibility."""
     return await chat(request)
+
+
+@app.get("/chat/sessions/{device_id}")
+async def get_chat_sessions(device_id: str, limit: int = 20):
+    """Get all chat sessions for a device."""
+    sessions = await get_device_sessions(device_id, limit)
+    return ChatHistoryResponse(sessions=sessions, total_count=len(sessions))
+
+
+@app.get("/chat/history/{session_id}")
+async def get_chat_history(session_id: str):
+    """Get all messages in a chat session."""
+    history = await get_session_history(session_id)
+    return {"messages": history, "count": len(history)}
+
+
+@app.post("/chat/sessions")
+async def create_session(request: CreateSessionRequest):
+    """Create a new chat session for a device."""
+    session_id = await create_or_get_session(request.device_id)
+    return {"session_id": session_id, "created_at": str(uuid.uuid4())}
 
 
 if __name__ == "__main__":
